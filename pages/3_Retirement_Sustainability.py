@@ -1,5 +1,5 @@
 """
-Page 3; Retirement Sustainability
+Page 3 — Retirement Sustainability
 ====================================
 Answers one question: does the plan hold up under retirement withdrawals?
 Probability of Success is the hero metric.
@@ -11,7 +11,6 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 from _shared import (
-    AMUNDI_CYAN,
     AMUNDI_GREEN,
     build_fan_chart,
     build_histogram,
@@ -96,7 +95,7 @@ st.caption(
 )
 
 # ---------------------------------------------------------------------------
-# KPIs; PoS hero + survival-focused metrics
+# KPIs — PoS hero + survival-focused metrics
 # ---------------------------------------------------------------------------
 hero_col, k2, k3, k4, k5 = st.columns([1.4, 1, 1, 1, 1])
 
@@ -120,7 +119,7 @@ st.divider()
 st.plotly_chart(
     build_fan_chart(
         sim,
-        title="Decumulation; Monte-Carlo Fan Chart",
+        title="Decumulation — Monte-Carlo Fan Chart",
         floor_label="Guaranteed Floor",
         band_color="0,122,51",
         median_color=AMUNDI_GREEN,
@@ -129,35 +128,34 @@ st.plotly_chart(
 )
 
 # ---------------------------------------------------------------------------
-# Survival Comparison + Survival Curve + Ending Wealth Histogram
+# Survival Curve + Survival Comparison
 # ---------------------------------------------------------------------------
-col_left, col_mid, col_right = st.columns(3)
+col_left, col_right = st.columns(2)
 
 with col_left:
     st.plotly_chart(
-        build_survival_comparison(
-            sim, sim_cm,
-            title="Survival Time; Box Plot",
-            time_horizon=time_horizon,
-        ),
-        width='stretch',
-    )
-
-with col_mid:
-    st.plotly_chart(
         build_survival_curve(
             sim, sim_cm,
-            title="Survival Curve",
             time_horizon=time_horizon,
+            title="Survival Probability by Retirement Year",
         ),
         width='stretch',
     )
 
 with col_right:
     st.plotly_chart(
-        build_histogram(sim, title="Ending Wealth Distribution", color=AMUNDI_GREEN),
+        build_survival_comparison(
+            sim, sim_cm,
+            title="Portfolio Survival — CPPI vs Constant Mix",
+            time_horizon=time_horizon,
+        ),
         width='stretch',
     )
+
+st.plotly_chart(
+    build_histogram(sim, title="Ending Wealth Distribution", color=AMUNDI_GREEN),
+    width='stretch',
+)
 
 # ---------------------------------------------------------------------------
 # Caveats

@@ -1,10 +1,8 @@
 """
-Page 4; Sensitivity & Model Risk
-===================================
+Page 4 — Sensitivity & Model Risk
+=================================
 Button-triggered heatmap of Probability of Success across
 withdrawal rates × retirement horizons.
-
-Uses a reduced simulation count (300) for responsiveness.
 """
 
 import streamlit as st
@@ -18,26 +16,16 @@ from _shared import (
     shared_market_sidebar,
 )
 
-# ---------------------------------------------------------------------------
-# Sidebar; market settings only
-# ---------------------------------------------------------------------------
 st.sidebar.title("Sensitivity Setup")
 mkt = shared_market_sidebar()
 
-# ---------------------------------------------------------------------------
-# Header
-# ---------------------------------------------------------------------------
 st.title("Sensitivity & Model Risk")
 st.caption(
-    "Explore how Probability of Success changes across withdrawal rates "
-    "and retirement horizons under the current market assumptions."
+    "Explore how Probability of Success changes across withdrawal rates and retirement horizons "
+    "under the current market assumptions."
 )
 
-# ---------------------------------------------------------------------------
-# Inline controls
-# ---------------------------------------------------------------------------
 c1, c2, c3 = st.columns(3)
-
 with c1:
     strategy_type = st.radio(
         "Strategy",
@@ -45,18 +33,14 @@ with c1:
         index=0,
         horizontal=True,
     )
-
 with c2:
     initial_wealth = st.number_input(
         "Initial Retirement Wealth (€)",
         min_value=100_000, max_value=10_000_000,
         value=1_000_000, step=100_000, format="%d",
     )
-
 with c3:
-    floor_pct = st.slider(
-        "Floor (%)", min_value=50, max_value=100, value=80, step=5,
-    )
+    floor_pct = st.slider("Floor (%)", min_value=50, max_value=100, value=80, step=5)
 
 c4, c5 = st.columns(2)
 with c4:
@@ -72,19 +56,16 @@ with c5:
         default=[15, 20, 25, 30],
     )
 
-# Map radio label to strategy_type expected by run_simulation
 _strategy_map = {"CPPI": "CPPI", "Constant Mix": "CM"}
 _strat = _strategy_map[strategy_type]
 
 st.caption(
     "Withdrawal rate = annual withdrawal ÷ initial retirement wealth. "
-    "Each cell shows Probability of Success (%) using **300 simulations** "
-    "for responsiveness."
+    f"Each cell shows Probability of Success (%) using **{mkt['n_simulations']:,} simulations**. "
+    "Displayed values are nominal and the Glidepath strategy is intentionally excluded here because "
+    "the current codebase does not yet have a dedicated decumulation glidepath engine."
 )
 
-# ---------------------------------------------------------------------------
-# Button-triggered sweep
-# ---------------------------------------------------------------------------
 if not withdrawal_rates or not horizons:
     st.warning("Select at least one withdrawal rate and one horizon.")
 else:
@@ -103,26 +84,11 @@ else:
                 simulation_method=mkt["simulation_method"],
                 block_length=mkt["block_length"],
                 strategy_type=_strat,
-                n_sims_sweep=300,
+                n_sims_sweep=mkt["n_simulations"],
             )
             st.session_state["sensitivity_df"] = df
 
-    # Show results if available
     if "sensitivity_df" in st.session_state:
-        df = st.session_state["sensitivity_df"]
+        st.plotly_chart(build_sensitivity_heatmap(st.session_state["sensitivity_df"]), width='stretch')
 
-        st.plotly_chart(
-            build_sensitivity_heatmap(df),
-            width='stretch',
-        )
-
-        # st.subheader("Raw Matrix")
-        # st.dataframe(
-        #     df.style.format("{:.1f} %"),
-        #     width='stretch',
-        # )
-
-# ---------------------------------------------------------------------------
-# Caveats & Roadmap
-# ---------------------------------------------------------------------------
 build_model_caveats_panel()

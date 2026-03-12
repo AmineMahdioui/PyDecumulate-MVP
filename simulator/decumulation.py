@@ -283,7 +283,7 @@ class DecConstantMixEngine:
         # 5. Calculate fractional allocation (avoiding divide-by-zero if wealth hits 0)
         risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
 
-        # 6. Risky benchmark: full wealth invested in risky asset; respects pathwise starting wealth
+        # 6. Risky benchmark: full wealth invested in risky asset — respects pathwise starting wealth
         if _has_iw:
             risky_asset_paths = initial_wealths[np.newaxis, :] * np.cumprod(gross_returns, axis=0)
         else:

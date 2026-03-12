@@ -1,50 +1,42 @@
 """
-Page 1; Lifecycle Wealth Path
-================================
-Full lifecycle simulation: accumulation → retirement → decumulation,
-presented as a single mountain chart with the median retirement pot
-as the hero KPI.
+Page 1 — Lifecycle Wealth Path
+==============================
+Full lifecycle simulation: accumulation → retirement → decumulation.
 """
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
 from _shared import (
-    AMUNDI_GREEN,
     FREQ_TO_PD_OFFSET,
     build_cash_flow_timeline,
-    build_mountain_chart_age,
     build_model_caveats_panel,
+    build_mountain_chart,
     run_lifecycle_simulation,
     shared_market_sidebar,
 )
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
 st.sidebar.title("Lifecycle Setup")
 mkt = shared_market_sidebar()
 
-# ---------------------------------------------------------------------------
-# Main area; per-phase parameters
-# ---------------------------------------------------------------------------
 st.title("Lifecycle Wealth Path")
 st.caption(
-    "Retirement Solutions Research Prototype; Simulate the complete journey "
-    "from accumulation through retirement, stitched into a single timeline."
+    "A single-page view of saving, retirement transition, and drawdown. "
+    "Current lifecycle engine uses CPPI in accumulation and Constant Mix in retirement."
+)
+st.info(
+    "On this page, the sidebar **CPPI multiplier** affects the accumulation phase only. "
+    "The retirement phase currently uses Constant Mix, so the retirement floor input is shown "
+    "for transparency but is not enforced as a hard CPPI-style floor."
 )
 
 col_acc, col_dec = st.columns(2)
 
 with col_acc:
     st.subheader("Accumulation Phase")
-    lc_start_age = st.number_input(
-        "Current Age", min_value=20, max_value=60,
-        value=35, step=1, key="lc_start_age",
-    )
+    start_age = st.number_input("Current Age", min_value=20, max_value=70, value=35, step=1)
     lc_acc_wealth = st.number_input(
         "Starting Pot (€)", min_value=0, max_value=10_000_000,
         value=50_000, step=5_000, format="%d", key="lc_acc_wealth",
@@ -63,10 +55,10 @@ with col_acc:
     )
 
 with col_dec:
-    st.subheader("Decumulation Phase")
+    st.subheader("Retirement Phase")
     st.info(
-        "The decumulation starting wealth is automatically set to the "
-        "**median ending wealth** of the accumulation phase (pathwise handoff)."
+        "Lifecycle handoff is **pathwise**: each simulated accumulation path feeds its own "
+        "retirement starting wealth."
     )
     lc_dec_withdrawal = st.number_input(
         "Annual Withdrawal (€)", min_value=0, max_value=10_000_000,
@@ -77,13 +69,11 @@ with col_dec:
         value=25, key="lc_dec_horizon",
     )
     lc_dec_floor = st.slider(
-        "Guaranteed Floor (%)", min_value=50, max_value=100,
+        "Retirement Floor Input (%)", min_value=50, max_value=100,
         value=80, step=5, key="lc_dec_floor",
+        help="Current lifecycle retirement uses Constant Mix. This value is retained for transparency and future multi-strategy lifecycle extensions, but it is not enforced as a hard floor in the current retirement path.",
     )
 
-# ---------------------------------------------------------------------------
-# Run CPPI lifecycle simulation (pathwise handoff)
-# ---------------------------------------------------------------------------
 sim_acc, sim_dec, retirement_pot = run_lifecycle_simulation(
     acc_initial_wealth=float(lc_acc_wealth),
     acc_time_horizon=lc_acc_horizon,
@@ -98,16 +88,13 @@ sim_acc, sim_dec, retirement_pot = run_lifecycle_simulation(
     risk_free_rate=mkt["risk_free_rate"],
     n_simulations=mkt["n_simulations"],
     rebalance_freq=mkt["rebalance_freq"],
+    simulation_method=mkt["simulation_method"],
+    block_length=mkt["block_length"],
 )
 
-# ---------------------------------------------------------------------------
-# KPIs; Median Retirement Pot is the hero; PoS is secondary
-# ---------------------------------------------------------------------------
 st.divider()
 total_in = lc_acc_wealth + lc_acc_contribution * lc_acc_horizon
-withdrawal_rate = (
-    (lc_dec_withdrawal / retirement_pot * 100) if retirement_pot > 0 else 0.0
-)
+withdrawal_rate = (lc_dec_withdrawal / retirement_pot * 100) if retirement_pot > 0 else 0.0
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric(
@@ -115,60 +102,45 @@ k1.metric(
     f"€ {retirement_pot:,.0f}",
     delta=f"{retirement_pot - total_in:+,.0f} vs contributed",
 )
-k2.metric("Retirement Phase PoS *", f"{sim_dec['prob_success']:.1f} %")
+k2.metric("Full-Lifecycle PoS (CPPI→CM)", f"{sim_dec['prob_success']:.1f} %")
 k3.metric("Median Residual Wealth", f"€ {sim_dec['median_ending']:,.0f}")
 k4.metric("Total Contributions", f"€ {total_in:,.0f}")
 k5.metric("Withdrawal Rate", f"{withdrawal_rate:.1f} %")
-k6.metric("Floor Level", f"{lc_dec_floor} %")
-
-st.caption(
-    "\\* Retirement Phase PoS is conditional on the median retirement pot. "
-    "It is **not** a joint full-lifecycle probability."
-)
+k6.metric("Retirement Floor Input", f"{lc_dec_floor} %")
 
 st.divider()
 
-# ---------------------------------------------------------------------------
-# Mountain Chart; flagship visualisation (Investor Age x-axis)
-# ---------------------------------------------------------------------------
-n_acc_steps = len(sim_acc["dates"])
-n_dec_steps = len(sim_dec["dates"])
-retirement_age = lc_start_age + lc_acc_horizon
-age_axis_acc = np.linspace(lc_start_age, retirement_age, n_acc_steps)
-age_axis_dec = np.linspace(retirement_age, retirement_age + lc_dec_horizon, n_dec_steps)
+acc_dates = sim_acc["dates"]
+freq_alias = FREQ_TO_PD_OFFSET[mkt["rebalance_freq"]]
+dec_start = acc_dates[-1] + pd.tseries.frequencies.to_offset(freq_alias)
+dec_dates = pd.date_range(
+    start=dec_start,
+    periods=len(sim_dec["dates"]),
+    freq=freq_alias,
+)
 
 st.plotly_chart(
-    build_mountain_chart_age(sim_acc, sim_dec, age_axis_acc, age_axis_dec),
+    build_mountain_chart(sim_acc, sim_dec, acc_dates, dec_dates),
     width='stretch',
 )
 
-# ---------------------------------------------------------------------------
-# Cash Flow Timeline (aligned to Investor Age)
-# ---------------------------------------------------------------------------
 st.plotly_chart(
     build_cash_flow_timeline(
-        acc_contribution=float(lc_acc_contribution),
-        dec_withdrawal=float(lc_dec_withdrawal),
-        acc_horizon=lc_acc_horizon,
-        dec_horizon=lc_dec_horizon,
-        start_age=lc_start_age,
+        start_age=int(start_age),
+        acc_horizon=int(lc_acc_horizon),
+        dec_horizon=int(lc_dec_horizon),
+        annual_contribution=float(lc_acc_contribution),
+        annual_withdrawal=float(lc_dec_withdrawal),
     ),
     width='stretch',
 )
-st.caption(
-    "Cash in (green) vs cash out (red) at each age. "
-    "All values are fixed annual amounts in Nominal (€); no inflation adjustment."
-)
 
-# ---------------------------------------------------------------------------
-# Assumptions & Caveats
-# ---------------------------------------------------------------------------
 st.caption(
-    f"Assumptions; {mkt['n_simulations']:,} Monte-Carlo paths · "
+    f"Assumptions — {mkt['n_simulations']:,} Monte-Carlo paths · "
     f"Expected return {mkt['expected_return']:.1f} % · "
     f"Volatility {mkt['market_volatility']:.1f} % · "
     f"Risk-free rate {mkt['risk_free_rate']:.1f} % · "
-    f"Rebalanced {mkt['rebalance_freq']}"
+    f"Rebalanced {mkt['rebalance_freq']} · Displayed values are nominal (€)"
 )
 
 build_model_caveats_panel()

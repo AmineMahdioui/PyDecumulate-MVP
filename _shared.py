@@ -92,16 +92,20 @@ def run_simulation(
         annual_withdrawal=annual_withdrawal,
     )
 
-    sim_returns = HistoricalBootstrapSimulator(p).generate_returns(seed=42, block_size=block_length)
-    # Alternative: GBM simulation via MarketSimulator (parametric, uses expected_return & market_volatility)
-
-
     if simulation_method == "GBM (Parametric)":
         market = MarketSimulator(params)
         sim_returns = {"equity": market.generate_returns(seed=42)}
+    else:
+        sim_returns = HistoricalBootstrapSimulator(p).generate_returns(
+            seed=42,
+            block_size=block_length,
+        )
 
     if params.is_decumulation:
-        engine = DecConstantMixEngine(params)
+        if strategy_type == "CPPI":
+            engine = DecCPPIEngine(params)
+        else:
+            engine = DecConstantMixEngine(params)
     else:
         if strategy_type == "CPPI":
             engine = AccCPPIEngine(params)
@@ -145,7 +149,6 @@ def run_simulation(
         # new analytics
         "allocation_percentiles": analyzer.allocation_percentile_paths(),
         "survival_times": analyzer.survival_time_per_path(),
-        "survival_curve": analyzer.survival_curve(),
         "contribution_cumsum": contribution_cumsum,
         "withdrawal_percentiles": analyzer.withdrawal_percentile_paths(),
         "lambda": params.Lambda / 100.0,  # Convert percentage to decimal
@@ -173,6 +176,8 @@ def run_lifecycle_simulation(
     risk_free_rate: float,
     n_simulations: int,
     rebalance_freq: str,
+    simulation_method: str = "GBM (Parametric)",
+    block_length: int = 1,
     annual_inflation_rate: float = 0.0,
     Lambda: float = 60.0,
 ) -> tuple[dict, dict, float]:
@@ -215,8 +220,32 @@ def run_lifecycle_simulation(
         Lambda=Lambda,
     )
 
-    acc_returns = MarketSimulator(acc_params).generate_returns(seed=42)
-    dec_returns = MarketSimulator(dec_params).generate_returns(seed=123)
+    if simulation_method == "Historical Bootstrap":
+        bootstrap_params = LifecycleParameters(
+            n_simulations=n_simulations,
+            time_horizon=max(acc_time_horizon, dec_time_horizon),
+            rebalance_freq=rebalance_freq,
+            cppi_multiplier=acc_cppi_multiplier,
+            floor_pct=acc_floor_pct,
+            risk_free_rate=risk_free_rate,
+            annual_withdrawal=dec_withdrawal,
+        )
+        bootstrap = HistoricalBootstrapSimulator(bootstrap_params)
+        acc_returns = bootstrap.generate_returns(
+            n_steps=acc_params.n_steps,
+            n_simulations=n_simulations,
+            seed=42,
+            block_size=block_length,
+        )["equity"]
+        dec_returns = bootstrap.generate_returns(
+            n_steps=dec_params.n_steps,
+            n_simulations=n_simulations,
+            seed=123,
+            block_size=block_length,
+        )["equity"]
+    else:
+        acc_returns = MarketSimulator(acc_params).generate_returns(seed=42)
+        dec_returns = MarketSimulator(dec_params).generate_returns(seed=123)
 
     lc: LifecycleResult = LifecycleSimulator(acc_params, dec_params).run(
         acc_returns, dec_returns
@@ -255,7 +284,6 @@ def run_lifecycle_simulation(
         "dates": acc_dates,
         "allocation_percentiles": acc_analyzer.allocation_percentile_paths(),
         "survival_times": acc_analyzer.survival_time_per_path(),
-        "survival_curve": acc_analyzer.survival_curve(),
         "contribution_cumsum": contribution_cumsum,
         "withdrawal_percentiles": acc_analyzer.withdrawal_percentile_paths(),
         "lambda": acc_params.Lambda / 100.0,
@@ -274,7 +302,6 @@ def run_lifecycle_simulation(
         "dates": dec_dates,
         "allocation_percentiles": dec_analyzer.allocation_percentile_paths(),
         "survival_times": dec_analyzer.survival_time_per_path(),
-        "survival_curve": dec_analyzer.survival_curve(),
         "contribution_cumsum": None,
         "withdrawal_percentiles": dec_analyzer.withdrawal_percentile_paths(),
         "lambda": dec_params.Lambda / 100.0,
@@ -473,7 +500,7 @@ def build_histogram(sim_data: dict, title: str = "", color: str = AMUNDI_CYAN) -
 
 
 # ---------------------------------------------------------------------------
-# Chart 3; Mountain chart (lifecycle: accumulation → decumulation)
+# Chart 3 — Mountain chart (lifecycle: accumulation → decumulation)
 # Inspired by Research Figure 1 & 3: the complete investor lifecycle
 # ---------------------------------------------------------------------------
 def build_mountain_chart(
@@ -485,7 +512,7 @@ def build_mountain_chart(
     """Lifecycle mountain chart.
 
     Shows the accumulation phase building up to a peak at retirement, then
-    the decumulation drawdown; the complete wealth lifecycle in one figure.
+    the decumulation drawdown — the complete wealth lifecycle in one figure.
     A "contributions base" layer visually separates invested capital from
     investment returns during accumulation.
     """
@@ -586,7 +613,7 @@ def build_mountain_chart(
     )
 
     fig.update_layout(
-        title="Full Lifecycle; The Wealth Mountain",
+        title="Full Lifecycle — The Wealth Mountain",
         xaxis_title="Date",
         yaxis_title="Portfolio Value (€)",
         template="plotly_white",
@@ -791,7 +818,7 @@ def build_glide_path_comparison(
     sim_cppi: dict,
     sim_cm: dict,
     dates,
-    title: str = "Dynamic CPPI vs Constant Mix; Risky Asset Allocation",
+    title: str = "Dynamic CPPI vs Constant Mix — Risky Asset Allocation",
 ) -> go.Figure:
     """Overlay CPPI's dynamic allocation fan against a flat CM allocation.
 
@@ -827,12 +854,12 @@ def build_glide_path_comparison(
     # CPPI median
     fig.add_trace(go.Scatter(
         x=dates, y=cppi_alloc["P50"], mode="lines",
-        name="CPPI; Dynamic (Constrained)", line=dict(color=AMUNDI_CYAN, width=3),
+        name="CPPI — Dynamic (Constrained)", line=dict(color=AMUNDI_CYAN, width=3),
     ))
-    # CM median; flat reference
+    # CM median — flat reference
     fig.add_trace(go.Scatter(
         x=dates, y=cm_alloc["P50"], mode="lines",
-        name="Constant Mix; Fixed Allocation",
+        name="Constant Mix — Fixed Allocation",
         line=dict(color=AMUNDI_GREY, width=2, dash="dash"),
     ))
 
@@ -851,14 +878,13 @@ def build_glide_path_comparison(
 
 
 # ---------------------------------------------------------------------------
-# Chart 5; Stacked allocation area chart
+# Chart 5 — Stacked allocation area chart
 # Inspired by Research Figure 25 & 26: portfolio composition over time
 # ---------------------------------------------------------------------------
 def build_stacked_allocation_chart(
     sim_data: dict,
     dates,
-    title: str = "Portfolio Composition; Risky vs Safe Assets",
-    x_title: str = "Date",
+    title: str = "Portfolio Composition — Risky vs Safe Assets",
 ) -> go.Figure:
     """Stacked area showing how CPPI dynamically splits the portfolio.
 
@@ -888,7 +914,7 @@ def build_stacked_allocation_chart(
 
     fig.update_layout(
         title=title,
-        xaxis_title=x_title,
+        xaxis_title="Date",
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 100], ticksuffix="%"),
         template="plotly_white",
@@ -901,13 +927,13 @@ def build_stacked_allocation_chart(
 
 
 # ---------------------------------------------------------------------------
-# Chart 6; Survival time comparison (CPPI vs Constant Mix)
+# Chart 6 — Survival time comparison (CPPI vs Constant Mix)
 # Inspired by Research Figure 9 & 10: RDUM vs SWR survival quantiles
 # ---------------------------------------------------------------------------
 def build_survival_comparison(
     sim_cppi: dict,
     sim_cm: dict,
-    title: str = "Strategy Comparison; Portfolio Survival Time",
+    title: str = "Strategy Comparison — Portfolio Survival Time",
     time_horizon: int | None = None,
 ) -> go.Figure:
     """Side-by-side box plots of survival time for CPPI vs Constant Mix.
@@ -957,51 +983,46 @@ def build_survival_comparison(
 
 
 # ---------------------------------------------------------------------------
-# Chart 6b; Survival curve (fraction of paths still funded over time)
+# Lifecycle cash-flow timeline
 # ---------------------------------------------------------------------------
-def build_survival_curve(
-    sim_cppi: dict,
-    sim_cm: dict,
-    title: str = "Survival Curve; Probability Portfolio Is Still Funded",
-    time_horizon: int | None = None,
+def build_cash_flow_timeline(
+    start_age: int,
+    acc_horizon: int,
+    dec_horizon: int,
+    annual_contribution: float,
+    annual_withdrawal: float,
 ) -> go.Figure:
-    """Line chart of fraction-of-paths-alive at each time step.
-
-    Uses the ``survival_curve`` key from ``run_simulation`` output, which
-    contains ``(time_years, fraction_alive)`` computed as
-    ``mean(portfolio_values[t] > 0)`` at each step.  This is the proper
-    survivor function; monotonically non-increasing from ~1.0.
-    """
-    t_cppi, f_cppi = sim_cppi["survival_curve"]
-    t_cm, f_cm = sim_cm["survival_curve"]
+    """Simple age-based cash-flow timeline in nominal euro terms."""
+    acc_ages = np.arange(start_age, start_age + acc_horizon)
+    dec_start_age = start_age + acc_horizon
+    dec_ages = np.arange(dec_start_age, dec_start_age + dec_horizon)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=t_cppi, y=f_cppi * 100, mode="lines",
-        name="CPPI (Dynamic)",
-        line=dict(color=AMUNDI_CYAN, width=2.5),
-    ))
-    fig.add_trace(go.Scatter(
-        x=t_cm, y=f_cm * 100, mode="lines",
-        name="Constant Mix (Fixed)",
-        line=dict(color=AMUNDI_GREY, width=2.5, dash="dash"),
-    ))
-
-    if time_horizon is not None:
-        fig.add_vline(
-            x=time_horizon, line_dash="dot", line_color=AMUNDI_NAVY, line_width=1,
-            annotation_text="Full horizon",
-            annotation_position="top left",
-        )
+    if len(acc_ages):
+        fig.add_trace(go.Bar(
+            x=acc_ages,
+            y=np.full(len(acc_ages), annual_contribution, dtype=float),
+            name="Annual Contribution",
+            marker_color=AMUNDI_CYAN,
+            opacity=0.85,
+        ))
+    if len(dec_ages):
+        fig.add_trace(go.Bar(
+            x=dec_ages,
+            y=-np.full(len(dec_ages), annual_withdrawal, dtype=float),
+            name="Annual Withdrawal",
+            marker_color=AMUNDI_GREEN,
+            opacity=0.75,
+        ))
+        fig.add_vline(x=dec_start_age - 0.5, line_color=AMUNDI_NAVY, line_width=2)
 
     fig.update_layout(
-        title=title,
-        xaxis_title="Years into Retirement",
-        yaxis_title="Paths Still Funded (%)",
-        yaxis=dict(range=[0, 105], ticksuffix="%"),
+        title="Lifecycle Cash-Flow Timeline",
+        xaxis_title="Investor Age",
+        yaxis_title="Nominal (€)",
         template="plotly_white",
-        height=440,
-        showlegend=True,
+        height=360,
+        barmode="relative",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=60, r=30, t=60, b=40),
         font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
@@ -1010,34 +1031,149 @@ def build_survival_curve(
 
 
 # ---------------------------------------------------------------------------
-# Model Caveats; shared across all pages
+# Accumulation strategy charts (age-based)
+# ---------------------------------------------------------------------------
+def _age_axis(start_age: int, n_points: int, steps_per_year: int) -> np.ndarray:
+    return start_age + np.arange(n_points) / max(steps_per_year, 1)
+
+
+def build_allocation_comparison_by_age(
+    sims: dict[str, dict],
+    start_age: int,
+    rebalance_freq: str,
+    title: str = "Risky Allocation by Investor Age",
+) -> go.Figure:
+    """Compare median risky allocation paths across accumulation strategies."""
+    steps_per_year = {"daily": 252, "weekly": 52, "monthly": 12, "quarterly": 4, "yearly": 1}[rebalance_freq]
+    fig = go.Figure()
+    colors = {
+        "CPPI": AMUNDI_CYAN,
+        "Glidepath": AMUNDI_GREEN,
+        "Constant Mix": AMUNDI_GREY,
+    }
+    dashes = {"CPPI": "solid", "Glidepath": "dash", "Constant Mix": "dot"}
+    for label, sim in sims.items():
+        ages = _age_axis(start_age, len(sim["allocation_percentiles"]["P50"]), steps_per_year)
+        fig.add_trace(go.Scatter(
+            x=ages,
+            y=sim["allocation_percentiles"]["P50"],
+            mode="lines",
+            name=label,
+            line=dict(color=colors.get(label, AMUNDI_NAVY), width=3 if label == "CPPI" else 2, dash=dashes.get(label, "solid")),
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Investor Age",
+        yaxis_title="Risky Allocation (%)",
+        yaxis=dict(range=[0, 105], ticksuffix="%"),
+        template="plotly_white",
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=30, t=60, b=40),
+        font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
+    )
+    return fig
+
+
+def build_terminal_wealth_boxplot(
+    strategy_wealths: dict[str, np.ndarray],
+    title: str = "Terminal Wealth Distribution — Accumulation Strategies",
+) -> go.Figure:
+    """Box plot comparing terminal nominal wealth across strategies."""
+    fig = go.Figure()
+    colors = {
+        "CPPI": AMUNDI_CYAN,
+        "Glidepath": AMUNDI_GREEN,
+        "Constant Mix": AMUNDI_GREY,
+    }
+    for label, wealths in strategy_wealths.items():
+        fig.add_trace(go.Box(
+            y=wealths,
+            name=label,
+            boxpoints="outliers",
+            marker_color=colors.get(label, AMUNDI_NAVY),
+            line_color=AMUNDI_NAVY,
+        ))
+    fig.update_layout(
+        title=title,
+        yaxis_title="Nominal (€)",
+        template="plotly_white",
+        height=420,
+        margin=dict(l=60, r=30, t=60, b=40),
+        font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Survival curve
+# ---------------------------------------------------------------------------
+def build_survival_curve(
+    sim_primary: dict,
+    sim_secondary: dict | None = None,
+    time_horizon: int | None = None,
+    title: str = "Probability the Portfolio Is Still Alive",
+) -> go.Figure:
+    """Survival curve built from per-path survival times, not ECDF."""
+    primary_times = np.asarray(sim_primary["survival_times"], dtype=float)
+    if time_horizon is None:
+        time_horizon = int(np.ceil(primary_times.max()))
+    grid = np.arange(0, time_horizon + 1)
+
+    def _survivor(times: np.ndarray) -> np.ndarray:
+        return np.array([100.0 * np.mean(times > g) for g in grid])
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=grid,
+        y=_survivor(primary_times),
+        mode="lines",
+        name="CPPI",
+        line=dict(color=AMUNDI_CYAN, width=3),
+    ))
+    if sim_secondary is not None:
+        secondary_times = np.asarray(sim_secondary["survival_times"], dtype=float)
+        fig.add_trace(go.Scatter(
+            x=grid,
+            y=_survivor(secondary_times),
+            mode="lines",
+            name="Constant Mix",
+            line=dict(color=AMUNDI_GREY, width=2, dash="dash"),
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Years in Retirement",
+        yaxis_title="Survival Probability (%)",
+        yaxis=dict(range=[0, 105], ticksuffix="%"),
+        template="plotly_white",
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=30, t=60, b=40),
+        font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Model Caveats — shared across all pages
 # ---------------------------------------------------------------------------
 CAVEATS_TEXT = """\
 **Model Caveats**
 
-- GBM assumes constant expected return and volatility; no regime switches, \
-mean-reversion, or fat tails.
-- CPPI includes a model-level floor mechanism (soft cushion constraint); \
-Glidepath and Constant Mix do not provide equivalent floor protection; \
-their equity allocation follows a schedule or fixed target with no \
-market-contingent de-risking floor.
-- Lifecycle Probability of Success is conditional on the median retirement \
-pot; it is not a joint full-path probability.
-- Withdrawals are fixed in nominal terms; no inflation adjustment during \
-decumulation.
-- No taxes, transaction costs, or liquidity constraints are modelled.
-- Longevity risk (stochastic mortality) is not yet implemented.
+- GBM assumes constant expected return and volatility — no regime switches, mean-reversion, or fat tails.
+- Lifecycle charts and KPIs are shown in **nominal euro terms** unless explicitly labelled otherwise; the inflation module exists in the codebase but is not yet active in the displayed page outputs.
+- The lifecycle page currently uses **CPPI in accumulation** and a **Constant Mix decumulation handoff**. It is pathwise, but it is not yet a configurable multi-strategy lifecycle engine.
+- CPPI includes a model floor mechanism (soft cushion constraint); Glidepath and Constant Mix do not provide equivalent floor protection.
+- Withdrawals are fixed in nominal terms on the sustainability page unless a future inflation-aware mode is explicitly enabled.
+- No taxes, transaction costs, liquidity constraints, or stochastic longevity are modelled in the displayed dashboard outputs.
 """
 
 ROADMAP_TEXT = """\
-- **Stochastic Inflation:** Vasicek / CIR process to stress-test \
-inflation spikes.
-- **Longevity Module:** Gompertz-Makeham mortality table for stochastic \
-death dates per path.
-- **RDUM:** Ruin-Date Utility Maximisation; dynamically adjusting the \
-risky multiplier *m* based on remaining wealth cushion.
-- **Private Asset Integration:** Illiquid Real Assets (PE / Infra) in \
-early accumulation to capture the illiquidity premium.
+- **Stochastic Inflation:** Vasicek / CIR process to stress-test inflation spikes.
+- **Longevity Module:** Gompertz-Makeham mortality table for stochastic death dates per path.
+- **RDUM:** Ruin-Date Utility Maximisation — dynamically adjusting the risky multiplier *m* based on remaining wealth cushion.
+- **Private Asset Integration:** Illiquid Real Assets (PE / Infra) in early accumulation to capture the illiquidity premium.
 - **Turnover / Cost Overlay:** Transaction cost modelling per rebalance.
 """
 
@@ -1095,12 +1231,10 @@ def build_glidepath_schedule_chart(
     final_equity: float,
     time_horizon: int,
     shape: str = "linear",
-    start_age: int | None = None,
 ) -> go.Figure:
     """Deterministic allocation schedule for a glidepath (no simulation needed).
 
     Parameters are in *fraction* space (0–1).  The chart displays percentages.
-    When ``start_age`` is provided the x-axis shows Investor Age; otherwise Year.
     """
     glidepath = AccLinearGlidepath(
         initial_equity_allocation=initial_equity,
@@ -1113,17 +1247,10 @@ def build_glidepath_schedule_chart(
     equity = np.array([glidepath.get_equity_allocation(int(y)) for y in years])
     hundred = np.full_like(equity, 100.0)
 
-    if start_age is not None:
-        x_axis = years + start_age
-        x_label = "Investor Age"
-    else:
-        x_axis = years
-        x_label = "Year"
-
     fig = go.Figure()
     # Bottom area: equity (fills from 0 up to the equity line)
     fig.add_trace(go.Scatter(
-        x=x_axis, y=equity * 100, mode="lines+markers",
+        x=years, y=equity * 100, mode="lines+markers",
         name="Equity Allocation",
         fill="tozeroy", fillcolor="rgba(0,159,227,0.35)",
         line=dict(color=AMUNDI_CYAN, width=3),
@@ -1131,15 +1258,15 @@ def build_glidepath_schedule_chart(
     ))
     # Top area: bonds fill from the equity boundary up to 100%
     fig.add_trace(go.Scatter(
-        x=x_axis, y=hundred, mode="none",
+        x=years, y=hundred, mode="none",
         name="Bond / Safe Allocation",
         fill="tonexty", fillcolor="rgba(88,89,91,0.20)",
         showlegend=True,
         line=dict(color="rgba(0,0,0,0)"),
     ))
     fig.update_layout(
-        title=f"Glidepath Schedule ({shape.title()}); Deterministic Allocation",
-        xaxis_title=x_label,
+        title=f"Glidepath Schedule ({shape.title()}) — Deterministic Allocation",
+        xaxis_title="Year",
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 105], ticksuffix="%"),
         template="plotly_white",
@@ -1152,7 +1279,7 @@ def build_glidepath_schedule_chart(
 
 
 # ---------------------------------------------------------------------------
-# Sensitivity Sweep; cached
+# Sensitivity Sweep — cached
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Computing sensitivity matrix …")
 def run_sensitivity_sweep(
@@ -1227,7 +1354,7 @@ def build_sensitivity_heatmap(df: pd.DataFrame) -> go.Figure:
         ),
     )
     fig.update_layout(
-        title="Sensitivity Matrix; Probability of Success (%)",
+        title="Sensitivity Matrix — Probability of Success (%)",
         template="plotly_white",
         height=max(300, 80 * len(df)),
         margin=dict(l=60, r=30, t=60, b=40),
