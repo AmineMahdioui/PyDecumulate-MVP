@@ -159,6 +159,7 @@ class HistoricalBootstrapSimulator:
         # )
 
         raw = pd.read_csv(_LOCAL_CSV ,index_col=0, header=[0, 1])
+        raw.index = pd.to_datetime(raw.index)
         if raw.empty:
             raise ValueError(
                 f"No price data returned for tickers "
