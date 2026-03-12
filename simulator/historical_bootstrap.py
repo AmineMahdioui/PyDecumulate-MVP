@@ -149,14 +149,15 @@ class HistoricalBootstrapSimulator:
         return prices.copy()
 
     def _download_prices(self) -> pd.DataFrame:
-        raw = yf.download(
-            tickers=[self.params.equity_ticker, self.params.bond_ticker],
-            start=self.params.start_date,
-            auto_adjust=True,
-            progress=False,
-            actions=False,
-        )
+        # raw = yf.download(
+        #     tickers=[self.params.equity_ticker, self.params.bond_ticker],
+        #     start=self.params.start_date,
+        #     auto_adjust=True,
+        #     progress=False,
+        #     actions=False,
+        # )
 
+        raw = pd.read_csv(r'D:\interview prepr\PyDecumulate MVP v1\simulator\data\historical_prices.csv',index_col=0, header=[0, 1])
         if raw.empty:
             raise ValueError(
                 f"No price data returned for tickers "
