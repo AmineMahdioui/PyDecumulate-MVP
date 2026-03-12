@@ -12,6 +12,7 @@ st.set_page_config(layout="wide")
 
 from _shared import (
     AMUNDI_GREEN,
+    AMUNDI_GREY,
     build_fan_chart,
     build_histogram,
     build_model_caveats_panel,
@@ -37,14 +38,22 @@ annual_withdrawal = st.sidebar.number_input(
     value=40_000, step=5_000, format="%d",
 )
 time_horizon = st.sidebar.slider(
-    "Withdrawal Horizon (Years)", min_value=1, max_value=40, value=20,
-)
-floor_pct = st.sidebar.slider(
-    "Guaranteed Floor (%)", min_value=50, max_value=100, value=80, step=5,
-    help="Minimum percentage of remaining withdrawal commitments to protect.",
+    "Withdrawal Horizon (Years)", min_value=1, max_value=40, value=30,
 )
 
-mkt = shared_market_sidebar()
+st.sidebar.header("Retirement Strategy")
+lambda_pct = st.sidebar.slider(
+    "Constant Mix Risky Allocation (%)", min_value=30, max_value=90, value=60, step=5,
+)
+gp_initial = st.sidebar.slider(
+    "Glidepath Initial Equity (%)", min_value=20, max_value=90, value=60, step=5,
+) / 100.0
+gp_final = st.sidebar.slider(
+    "Glidepath Final Equity (%)", min_value=0, max_value=80, value=30, step=5,
+) / 100.0
+gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=0)
+
+mkt = shared_market_sidebar(context="retirement", include_cppi=False)
 
 # ---------------------------------------------------------------------------
 # Simulations
@@ -53,7 +62,7 @@ sim = run_simulation(
     initial_wealth=float(initial_wealth),
     time_horizon=time_horizon,
     cppi_multiplier=mkt["cppi_multiplier"],
-    floor_pct=float(floor_pct),
+    floor_pct=0.0,
     expected_return=mkt["expected_return"],
     market_volatility=mkt["market_volatility"],
     risk_free_rate=mkt["risk_free_rate"],
@@ -61,9 +70,13 @@ sim = run_simulation(
     rebalance_freq=mkt["rebalance_freq"],
     annual_withdrawal=float(annual_withdrawal),
     annual_contribution=0.0,
+    lambda_pct=float(lambda_pct),
     simulation_method=mkt["simulation_method"],
     block_length=mkt["block_length"],
-    strategy_type="CPPI",
+    strategy_type="Glidepath",
+    glidepath_initial=gp_initial,
+    glidepath_final=gp_final,
+    glidepath_shape=gp_shape,
 )
 
 # Constant Mix baseline for survival comparison
@@ -71,7 +84,7 @@ sim_cm = run_simulation(
     initial_wealth=float(initial_wealth),
     time_horizon=time_horizon,
     cppi_multiplier=mkt["cppi_multiplier"],
-    floor_pct=float(floor_pct),
+    floor_pct=0.0,
     expected_return=mkt["expected_return"],
     market_volatility=mkt["market_volatility"],
     risk_free_rate=mkt["risk_free_rate"],
@@ -79,6 +92,7 @@ sim_cm = run_simulation(
     rebalance_freq=mkt["rebalance_freq"],
     annual_withdrawal=float(annual_withdrawal),
     annual_contribution=0.0,
+    lambda_pct=float(lambda_pct),
     simulation_method=mkt["simulation_method"],
     block_length=mkt["block_length"],
     strategy_type="CM",
@@ -89,7 +103,7 @@ sim_cm = run_simulation(
 # ---------------------------------------------------------------------------
 st.title("Retirement Sustainability")
 st.caption(
-    "Does the plan hold up under retirement withdrawals? "
+    "Does the plan hold up under retirement withdrawals under Glidepath vs Constant Mix? "
     f"{mkt['n_simulations']:,} Monte-Carlo paths · "
     f"{time_horizon}-year withdrawal horizon"
 )
@@ -120,9 +134,10 @@ st.plotly_chart(
     build_fan_chart(
         sim,
         title="Decumulation — Monte-Carlo Fan Chart",
-        floor_label="Guaranteed Floor",
+        floor_label="Reference Floor",
         band_color="0,122,51",
         median_color=AMUNDI_GREEN,
+        median_label="Median Glidepath Portfolio",
     ),
     width='stretch',
 )
@@ -138,6 +153,8 @@ with col_left:
             sim, sim_cm,
             time_horizon=time_horizon,
             title="Survival Probability by Retirement Year",
+            primary_label="Glidepath",
+            secondary_label="Constant Mix",
         ),
         width='stretch',
     )
@@ -146,14 +163,16 @@ with col_right:
     st.plotly_chart(
         build_survival_comparison(
             sim, sim_cm,
-            title="Portfolio Survival — CPPI vs Constant Mix",
+            title="Portfolio Survival — Glidepath vs Constant Mix",
             time_horizon=time_horizon,
+            primary_label="Glidepath",
+            secondary_label="Constant Mix",
         ),
         width='stretch',
     )
 
 st.plotly_chart(
-    build_histogram(sim, title="Ending Wealth Distribution", color=AMUNDI_GREEN),
+    build_histogram(sim, title="Ending Wealth Distribution — Glidepath", color=AMUNDI_GREEN),
     width='stretch',
 )
 

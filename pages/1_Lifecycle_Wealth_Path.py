@@ -19,7 +19,7 @@ from _shared import (
 )
 
 st.sidebar.title("Lifecycle Setup")
-mkt = shared_market_sidebar()
+mkt = shared_market_sidebar(context="lifecycle", include_cppi=True)
 
 st.title("Lifecycle Wealth Path")
 st.caption(
@@ -36,18 +36,18 @@ col_acc, col_dec = st.columns(2)
 
 with col_acc:
     st.subheader("Accumulation Phase")
-    start_age = st.number_input("Current Age", min_value=20, max_value=70, value=35, step=1)
+    start_age = st.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
     lc_acc_wealth = st.number_input(
         "Starting Pot (€)", min_value=0, max_value=10_000_000,
-        value=50_000, step=5_000, format="%d", key="lc_acc_wealth",
+        value=1_000_000, step=50_000, format="%d", key="lc_acc_wealth",
     )
     lc_acc_contribution = st.number_input(
         "Annual Contribution (€)", min_value=0, max_value=10_000_000,
-        value=12_000, step=1_000, format="%d", key="lc_acc_contrib",
+        value=50_000, step=5_000, format="%d", key="lc_acc_contrib",
     )
     lc_acc_horizon = st.slider(
         "Years to Retirement", min_value=1, max_value=40,
-        value=30, key="lc_acc_horizon",
+        value=40, key="lc_acc_horizon",
     )
     lc_acc_floor = st.slider(
         "Capital Protection Floor (%)", min_value=50, max_value=100,
@@ -66,7 +66,7 @@ with col_dec:
     )
     lc_dec_horizon = st.slider(
         "Years in Retirement", min_value=1, max_value=40,
-        value=25, key="lc_dec_horizon",
+        value=30, key="lc_dec_horizon",
     )
     lc_dec_floor = st.slider(
         "Retirement Floor Input (%)", min_value=50, max_value=100,

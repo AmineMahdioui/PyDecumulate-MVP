@@ -140,11 +140,11 @@ class MonteCarloAnalyzer:
             {
                 "Date": dates,
                 "Risky Asset (Median)": np.round(risky_median, 2),
-                "CPPI Portfolio (P5)": np.round(pcts["P5"], 2),
-                "CPPI Portfolio (P25)": np.round(pcts["P25"], 2),
-                "CPPI Portfolio (Median)": np.round(pcts["P50"], 2),
-                "CPPI Portfolio (P75)": np.round(pcts["P75"], 2),
-                "CPPI Portfolio (P95)": np.round(pcts["P95"], 2),
+                "Portfolio (P5)": np.round(pcts["P5"], 2),
+                "Portfolio (P25)": np.round(pcts["P25"], 2),
+                "Portfolio (Median)": np.round(pcts["P50"], 2),
+                "Portfolio (P75)": np.round(pcts["P75"], 2),
+                "Portfolio (P95)": np.round(pcts["P95"], 2),
                 "Guaranteed Floor": np.round(
                     self._result.floor_values, 2
                 ),

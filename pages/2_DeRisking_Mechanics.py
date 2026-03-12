@@ -32,18 +32,18 @@ st.sidebar.title("Accumulation Setup")
 
 st.sidebar.header("Portfolio & Horizon")
 start_age = st.sidebar.number_input(
-    "Current Age", min_value=20, max_value=60, value=35, step=1,
+    "Current Age", min_value=20, max_value=60, value=25, step=1,
 )
 initial_wealth = st.sidebar.number_input(
     "Starting Pot (€)", min_value=0, max_value=10_000_000,
-    value=50_000, step=5_000, format="%d",
+    value=1_000_000, step=50_000, format="%d",
 )
 annual_contribution = st.sidebar.number_input(
     "Annual Contribution (€)", min_value=0, max_value=10_000_000,
-    value=12_000, step=1_000, format="%d",
+    value=50_000, step=5_000, format="%d",
 )
 time_horizon = st.sidebar.slider(
-    "Savings Horizon (Years)", min_value=1, max_value=40, value=30,
+    "Savings Horizon (Years)", min_value=1, max_value=40, value=40,
 )
 floor_pct = st.sidebar.slider(
     "Capital Protection Floor (%)", min_value=50, max_value=100,
@@ -51,7 +51,7 @@ floor_pct = st.sidebar.slider(
     help="CPPI floor; percentage of invested capital the strategy protects.",
 )
 
-mkt = shared_market_sidebar()
+mkt = shared_market_sidebar(context="accumulation", include_cppi=True)
 
 # Glidepath-specific controls
 st.sidebar.header("Glidepath Parameters")
@@ -126,7 +126,6 @@ st.plotly_chart(
     build_stacked_allocation_chart(
         sim_cppi, age_axis,
         title="CPPI Accumulation; Risky vs Safe Over Time",
-        x_title="Investor Age",
     ),
     width='stretch',
 )
@@ -151,7 +150,6 @@ st.plotly_chart(
         final_equity=gp_final,
         time_horizon=time_horizon,
         shape=gp_shape,
-        start_age=start_age,
     ),
     width='stretch',
 )

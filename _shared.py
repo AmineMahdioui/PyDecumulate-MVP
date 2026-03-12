@@ -14,8 +14,8 @@ from simulator import (
     AccConstantMixEngine,
     AccGlidepathEngine,
     AccLinearGlidepath,
-    DecCPPIEngine,
     DecConstantMixEngine,
+    DecGlidepathEngine,
     MarketSimulator,
     MonteCarloAnalyzer,
     StrategyParameters,
@@ -62,6 +62,7 @@ def run_simulation(
     rebalance_freq: str,
     annual_withdrawal: float,
     annual_contribution: float,
+    lambda_pct: float = 60.0,
     simulation_method: str = "GBM (Parametric)",
     block_length: int = 1,
     strategy_type: str = "CPPI",    # Glidepath-specific kwargs (ignored for other strategy types)
@@ -81,6 +82,7 @@ def run_simulation(
         rebalance_freq=rebalance_freq,
         annual_withdrawal=annual_withdrawal,
         annual_contribution=annual_contribution,
+        Lambda=lambda_pct,
     )
     p = LifecycleParameters(
         n_simulations=n_simulations,
@@ -103,7 +105,17 @@ def run_simulation(
 
     if params.is_decumulation:
         if strategy_type == "CPPI":
-            engine = DecCPPIEngine(params)
+            raise ValueError(
+                "Decumulation CPPI is deprecated and unsupported in the app. "
+                "Use 'CM' or 'Glidepath' for retirement comparisons."
+            )
+        if strategy_type in {"Glidepath", "GP"}:
+            engine = DecGlidepathEngine(
+                params,
+                initial_equity=glidepath_initial,
+                final_equity=glidepath_final,
+                shape=glidepath_shape,
+            )
         else:
             engine = DecConstantMixEngine(params)
     else:
@@ -313,22 +325,35 @@ def run_lifecycle_simulation(
 # ---------------------------------------------------------------------------
 # Sidebar: market & simulation settings (shared across pages)
 # ---------------------------------------------------------------------------
-def shared_market_sidebar() -> dict:
+def shared_market_sidebar(
+    context: str = "retirement",
+    include_cppi: bool = True,
+    show_n_simulations: bool = True,
+    fixed_n_simulations: int | None = None,
+) -> dict:
     """Render sidebar widgets for market assumptions & simulation settings.
 
     Returns a dict with keys that match ``run_simulation`` keyword args:
     ``expected_return``, ``market_volatility``, ``risk_free_rate``,
     ``n_simulations``, ``rebalance_freq``, ``cppi_multiplier``.
     """
-    st.sidebar.header("CPPI Strategy")
+    context_defaults = {
+        "accumulation": dict(expected_return=8.0, market_volatility=15.0, risk_free_rate=2.0, n_simulations=1000),
+        "retirement": dict(expected_return=5.0, market_volatility=15.0, risk_free_rate=1.0, n_simulations=1000),
+        "lifecycle": dict(expected_return=8.0, market_volatility=15.0, risk_free_rate=2.0, n_simulations=1000),
+    }
+    defaults = context_defaults.get(context, context_defaults["retirement"])
 
-    cppi_multiplier = st.sidebar.slider(
-        "CPPI Multiplier (m)",
-        min_value=1.0,
-        max_value=10.0,
-        value=3.0,
-        step=0.5,
-    )
+    cppi_multiplier = 3.0
+    if include_cppi:
+        st.sidebar.header("CPPI Strategy")
+        cppi_multiplier = st.sidebar.slider(
+            "CPPI Multiplier (m)",
+            min_value=1.0,
+            max_value=10.0,
+            value=3.0,
+            step=0.5,
+        )
 
     st.sidebar.header("Market Assumptions")
 
@@ -336,21 +361,21 @@ def shared_market_sidebar() -> dict:
         "Expected Market Return (%)",
         min_value=0.0,
         max_value=20.0,
-        value=7.0,
+        value=float(defaults["expected_return"]),
         step=0.5,
     )
     market_volatility = st.sidebar.slider(
         "Market Volatility (%)",
         min_value=1.0,
         max_value=50.0,
-        value=15.0,
+        value=float(defaults["market_volatility"]),
         step=0.5,
     )
     risk_free_rate = st.sidebar.slider(
         "Risk-Free Rate (%)",
         min_value=0.0,
         max_value=10.0,
-        value=2.0,
+        value=float(defaults["risk_free_rate"]),
         step=0.25,
     )
 
@@ -381,13 +406,16 @@ def shared_market_sidebar() -> dict:
             help="Number of consecutive periods per bootstrap block. 1 = i.i.d. resample; larger values preserve short-term autocorrelation.",
         )
 
-    n_simulations = st.sidebar.slider(
-        "Monte-Carlo Simulations",
-        min_value=100,
-        max_value=5000,
-        value=1000,
-        step=100,
-    )
+    if show_n_simulations:
+        n_simulations = st.sidebar.slider(
+            "Monte-Carlo Simulations",
+            min_value=100,
+            max_value=5000,
+            value=int(defaults["n_simulations"]),
+            step=100,
+        )
+    else:
+        n_simulations = fixed_n_simulations if fixed_n_simulations is not None else int(defaults["n_simulations"])
     rebalance_freq = st.sidebar.selectbox(
         "Rebalancing Frequency",
         options=["daily", "weekly", "monthly", "quarterly", "yearly"],
@@ -415,6 +443,7 @@ def build_fan_chart(
     floor_label: str = "Floor",
     band_color: str = "0,122,51",
     median_color: str = AMUNDI_CYAN,
+    median_label: str = "Median Portfolio",
 ) -> go.Figure:
     """Return a Plotly fan chart for a single simulation result."""
     pcts = sim_data["percentiles"]
@@ -444,7 +473,7 @@ def build_fan_chart(
     # Median
     fig.add_trace(go.Scatter(
         x=dates, y=pcts["P50"], mode="lines",
-        name="Median CPPI Portfolio", line=dict(color=median_color, width=3),
+        name=median_label, line=dict(color=median_color, width=3),
     ))
     # Floor
     fig.add_trace(go.Scatter(
@@ -931,37 +960,39 @@ def build_stacked_allocation_chart(
 # Inspired by Research Figure 9 & 10: RDUM vs SWR survival quantiles
 # ---------------------------------------------------------------------------
 def build_survival_comparison(
-    sim_cppi: dict,
-    sim_cm: dict,
+    sim_primary: dict,
+    sim_secondary: dict,
     title: str = "Strategy Comparison — Portfolio Survival Time",
     time_horizon: int | None = None,
+    primary_label: str = "Primary Strategy",
+    secondary_label: str = "Secondary Strategy",
 ) -> go.Figure:
-    """Side-by-side box plots of survival time for CPPI vs Constant Mix.
+    """Side-by-side box plots of survival time for two strategies.
 
     Directly mirrors the research finding (Figure 9 & 10) that dynamic
     floor-protection strategies improve worst-case survival quantiles
     compared to a static withdrawal rate.  Paths that survive the full
     horizon are right-censored and shown with a dashed annotation.
     """
-    st_cppi = sim_cppi["survival_times"]
-    st_cm   = sim_cm["survival_times"]
+    st_primary = sim_primary["survival_times"]
+    st_secondary = sim_secondary["survival_times"]
 
     fig = go.Figure()
     fig.add_trace(go.Box(
-        y=st_cppi, name="CPPI (Dynamic)",
+        y=st_primary, name=primary_label,
         boxpoints="outliers",
         marker_color=AMUNDI_CYAN,
         line_color=AMUNDI_NAVY,
     ))
     fig.add_trace(go.Box(
-        y=st_cm, name="Constant Mix (Fixed)",
+        y=st_secondary, name=secondary_label,
         boxpoints="outliers",
         marker_color=AMUNDI_GREY,
         line_color=AMUNDI_NAVY,
     ))
 
     # Mark the censoring threshold (simulated horizon + 1 = "survived")
-    censor_y = float(st_cppi.max())
+    censor_y = float(max(st_primary.max(), st_secondary.max()))
     fig.add_hline(
         y=censor_y,
         line_dash="dot", line_color=AMUNDI_NAVY, line_width=1,
@@ -1113,6 +1144,8 @@ def build_survival_curve(
     sim_secondary: dict | None = None,
     time_horizon: int | None = None,
     title: str = "Probability the Portfolio Is Still Alive",
+    primary_label: str = "Primary Strategy",
+    secondary_label: str = "Secondary Strategy",
 ) -> go.Figure:
     """Survival curve built from per-path survival times, not ECDF."""
     primary_times = np.asarray(sim_primary["survival_times"], dtype=float)
@@ -1128,7 +1161,7 @@ def build_survival_curve(
         x=grid,
         y=_survivor(primary_times),
         mode="lines",
-        name="CPPI",
+        name=primary_label,
         line=dict(color=AMUNDI_CYAN, width=3),
     ))
     if sim_secondary is not None:
@@ -1137,7 +1170,7 @@ def build_survival_curve(
             x=grid,
             y=_survivor(secondary_times),
             mode="lines",
-            name="Constant Mix",
+            name=secondary_label,
             line=dict(color=AMUNDI_GREY, width=2, dash="dash"),
         ))
 
@@ -1165,6 +1198,7 @@ CAVEATS_TEXT = """\
 - Lifecycle charts and KPIs are shown in **nominal euro terms** unless explicitly labelled otherwise; the inflation module exists in the codebase but is not yet active in the displayed page outputs.
 - The lifecycle page currently uses **CPPI in accumulation** and a **Constant Mix decumulation handoff**. It is pathwise, but it is not yet a configurable multi-strategy lifecycle engine.
 - CPPI includes a model floor mechanism (soft cushion constraint); Glidepath and Constant Mix do not provide equivalent floor protection.
+- Retirement comparisons currently support **Constant Mix** and **Glidepath** decumulation.
 - Withdrawals are fixed in nominal terms on the sustainability page unless a future inflation-aware mode is explicitly enabled.
 - No taxes, transaction costs, liquidity constraints, or stochastic longevity are modelled in the displayed dashboard outputs.
 """
@@ -1288,13 +1322,17 @@ def run_sensitivity_sweep(
     initial_wealth: float,
     floor_pct: float,
     cppi_multiplier: float,
+    lambda_pct: float,
     expected_return: float,
     market_volatility: float,
     risk_free_rate: float,
     rebalance_freq: str,
     simulation_method: str = "GBM (Parametric)",
     block_length: int = 1,
-    strategy_type: str = "CPPI",
+    strategy_type: str = "Glidepath",
+    glidepath_initial: float = 0.60,
+    glidepath_final: float = 0.30,
+    glidepath_shape: str = "linear",
     n_sims_sweep: int = 300,
 ) -> pd.DataFrame:
     """Compute a PoS matrix over withdrawal rates × retirement horizons.
@@ -1321,9 +1359,13 @@ def run_sensitivity_sweep(
                 rebalance_freq=rebalance_freq,
                 annual_withdrawal=ann_wd,
                 annual_contribution=0.0,
+                lambda_pct=lambda_pct,
                 simulation_method=simulation_method,
                 block_length=block_length,
                 strategy_type=strategy_type,
+                glidepath_initial=glidepath_initial,
+                glidepath_final=glidepath_final,
+                glidepath_shape=glidepath_shape,
             )
             row[f"{rate:.0f} %"] = round(sim["prob_success"], 1)
         rows[horizon] = row
