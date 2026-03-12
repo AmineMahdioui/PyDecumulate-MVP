@@ -20,6 +20,7 @@ _frequency_mapping = {
         "yearly": "Y",
     }
 FloatArray = npt.NDArray[np.float64]
+_LOCAL_CSV = Path(__file__).resolve().parent / "data" / "historical_prices.csv"
 
 
 class HistoricalBootstrapSimulator:
@@ -157,7 +158,7 @@ class HistoricalBootstrapSimulator:
         #     actions=False,
         # )
 
-        raw = pd.read_csv(r'D:\interview prepr\PyDecumulate MVP v1\simulator\data\historical_prices.csv',index_col=0, header=[0, 1])
+        raw = pd.read_csv(_LOCAL_CSV ,index_col=0, header=[0, 1])
         if raw.empty:
             raise ValueError(
                 f"No price data returned for tickers "
