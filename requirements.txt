@@ -1,1 +1,7 @@
 streamlit>=1.33.0
+plotly
+numpy
+pandas
+yfinance
+seaborn
+numba
