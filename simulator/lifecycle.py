@@ -11,7 +11,6 @@ from .accumulation import (
 )
 from .decumulation import (
     DecumulationResult,
-    DecCPPIEngine,
     DecConstantMixEngine,
     DecGlidepathEngine,
 )
@@ -29,9 +28,9 @@ class LifecycleResult:
 
 class LifecycleSimulator:
     """
-    Orchestrates a full lifecycle simulation:
-      1. Accumulation phase (CPPI) and terminal nominal state per path
-      2. Decumulation phase (Constant Mix) fed per-path terminal state
+        Orchestrates a full lifecycle simulation:
+            1. Accumulation phase and terminal nominal state per path
+            2. Decumulation phase fed with the same pathwise retirement handoff
 
     The handoff uses nominal (pre-deflation) values so that wealth at
     retirement is expressed in retirement-date currency, not today's
@@ -42,9 +41,28 @@ class LifecycleSimulator:
         self,
         acc_params: StrategyParameters,
         dec_params: StrategyParameters,
+        lifecycle_mode: str = "CPPI_TO_CM",
+        acc_glidepath_initial: float = 0.80,
+        acc_glidepath_final: float = 0.20,
+        acc_glidepath_shape: str = "linear",
+        dec_glidepath_initial: float = 0.60,
+        dec_glidepath_final: float = 0.30,
+        dec_glidepath_shape: str = "linear",
     ) -> None:
         self._acc_params = acc_params
         self._dec_params = dec_params
+        self._lifecycle_mode = lifecycle_mode
+        self._acc_glidepath_initial = acc_glidepath_initial
+        self._acc_glidepath_final = acc_glidepath_final
+        self._acc_glidepath_shape = acc_glidepath_shape
+        self._dec_glidepath_initial = dec_glidepath_initial
+        self._dec_glidepath_final = dec_glidepath_final
+        self._dec_glidepath_shape = dec_glidepath_shape
+
+        if self._lifecycle_mode not in {"CPPI_TO_CM", "GLIDEPATH_TO_GLIDEPATH"}:
+            raise ValueError(
+                "lifecycle_mode must be 'CPPI_TO_CM' or 'GLIDEPATH_TO_GLIDEPATH'."
+            )
 
     def run(
         self,
@@ -84,8 +102,16 @@ class LifecycleSimulator:
                 f"dec_returns has {dec_returns.shape[1]} paths but params expect {n_sims}."
             )
 
-        # --- Step 1: Run accumulation (CPPI) --------------------------------------
-        acc_result = AccCPPIEngine(self._acc_params).run(acc_returns, riskless_acc)
+        # --- Step 1: Run accumulation ---------------------------------------------
+        if self._lifecycle_mode == "CPPI_TO_CM":
+            acc_result = AccCPPIEngine(self._acc_params).run(acc_returns, riskless_acc)
+        else:
+            acc_result = AccGlidepathEngine(
+                self._acc_params,
+                initial_equity=self._acc_glidepath_initial,
+                final_equity=self._acc_glidepath_final,
+                shape=self._acc_glidepath_shape,
+            ).run(acc_returns, riskless_acc)
 
         if acc_result.portfolio_values_nominal.shape[1] != n_sims:
             raise ValueError(
@@ -108,13 +134,26 @@ class LifecycleSimulator:
                 f"{retirement_risky_allocation.shape} != ({n_sims},)."
             )
 
-        # --- Step 3: Run decumulation (CM) with pathwise handoff ------------------
-        dec_result = DecConstantMixEngine(self._dec_params).run(
-            dec_returns,
-            riskless_dec,
-            initial_wealths=retirement_wealths_nominal,
-            initial_risky_allocation=retirement_risky_allocation,
-        )
+        # --- Step 3: Run decumulation with pathwise handoff -----------------------
+        if self._lifecycle_mode == "CPPI_TO_CM":
+            dec_result = DecConstantMixEngine(self._dec_params).run(
+                dec_returns,
+                riskless_dec,
+                initial_wealths=retirement_wealths_nominal,
+                initial_risky_allocation=retirement_risky_allocation,
+            )
+        else:
+            dec_result = DecGlidepathEngine(
+                self._dec_params,
+                initial_equity=self._dec_glidepath_initial,
+                final_equity=self._dec_glidepath_final,
+                shape=self._dec_glidepath_shape,
+            ).run(
+                dec_returns,
+                riskless_dec,
+                initial_wealths=retirement_wealths_nominal,
+                initial_risky_allocation=retirement_risky_allocation,
+            )
 
         if dec_result.portfolio_values.shape[1] != n_sims:
             raise ValueError(

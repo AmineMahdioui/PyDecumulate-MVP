@@ -3,7 +3,7 @@ Page 2; Accumulation & De-Risking Mechanics
 ==============================================
 Three sections examining how different strategies allocate between risky and
 safe assets over the accumulation horizon:
-  Section A; CPPI: cushion-based dynamic allocation
+  Section A; Constant Mix: fixed risky allocation
   Section B; Glidepath: deterministic schedule (linear / convex / concave)
   Section C; Strategy comparison: terminal wealth box plot
 """
@@ -20,6 +20,7 @@ from _shared import (
     AMUNDI_GREY,
     AMUNDI_NAVY,
     build_glidepath_schedule_chart,
+    build_model_caveats_panel,
     build_stacked_allocation_chart,
     run_simulation,
     shared_market_sidebar,
@@ -45,13 +46,14 @@ annual_contribution = st.sidebar.number_input(
 time_horizon = st.sidebar.slider(
     "Savings Horizon (Years)", min_value=1, max_value=40, value=40,
 )
-floor_pct = st.sidebar.slider(
-    "Capital Protection Floor (%)", min_value=50, max_value=100,
-    value=80, step=5,
-    help="CPPI floor; percentage of invested capital the strategy protects.",
-)
+mkt = shared_market_sidebar(context="accumulation", include_cppi=False)
 
-mkt = shared_market_sidebar(context="accumulation", include_cppi=True)
+# Constant Mix controls
+st.sidebar.header("Constant Mix Parameters")
+cm_lambda = st.sidebar.slider(
+    "Risky Allocation (%)", min_value=10, max_value=100, value=60, step=5,
+    help="Constant Mix: fixed percentage of portfolio held in risky assets at all times.",
+)
 
 # Glidepath-specific controls
 st.sidebar.header("Glidepath Parameters")
@@ -79,7 +81,7 @@ _sim_kw = dict(
     initial_wealth=float(initial_wealth),
     time_horizon=time_horizon,
     cppi_multiplier=mkt["cppi_multiplier"],
-    floor_pct=float(floor_pct),
+    floor_pct=0.0,
     expected_return=mkt["expected_return"],
     market_volatility=mkt["market_volatility"],
     risk_free_rate=mkt["risk_free_rate"],
@@ -87,11 +89,12 @@ _sim_kw = dict(
     rebalance_freq=mkt["rebalance_freq"],
     annual_withdrawal=0.0,
     annual_contribution=float(annual_contribution),
+    lambda_pct=float(cm_lambda),
     simulation_method=mkt["simulation_method"],
     block_length=mkt["block_length"],
 )
 
-sim_cppi = run_simulation(**_sim_kw, strategy_type="CPPI")
+sim_cm = run_simulation(**_sim_kw, strategy_type="CM")
 sim_gp = run_simulation(
     **_sim_kw,
     strategy_type="Glidepath",
@@ -99,12 +102,11 @@ sim_gp = run_simulation(
     glidepath_final=gp_final,
     glidepath_shape=gp_shape,
 )
-sim_cm = run_simulation(**_sim_kw, strategy_type="CM")
 
 # ---------------------------------------------------------------------------
 # Age axis for charts
 # ---------------------------------------------------------------------------
-n_steps = len(sim_cppi["dates"])
+n_steps = len(sim_cm["dates"])
 retirement_age = start_age + time_horizon
 age_axis = np.linspace(start_age, retirement_age, n_steps)
 
@@ -118,24 +120,23 @@ st.caption(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Section A; CPPI Allocation
+# Section A; Constant Mix Allocation
 # ═══════════════════════════════════════════════════════════════════════════
-st.subheader("CPPI: Cushion-Based Dynamic Allocation")
+st.subheader("Constant Mix: Fixed Risky Allocation")
 
 st.plotly_chart(
     build_stacked_allocation_chart(
-        sim_cppi, age_axis,
-        title="CPPI Accumulation; Risky vs Safe Over Time",
+        sim_cm, age_axis,
+        title=f"Constant Mix Accumulation; Risky vs Safe Over Time ({cm_lambda:.0f}% Risky)",
     ),
     width='stretch',
 )
 
 st.caption(
-    "CPPI allocation adjusts when the portfolio cushion (wealth − floor) "
-    "contracts. A falling market reduces the cushion, which mechanically "
-    "reduces risky exposure. In strong markets the cushion expands and "
-    "risky exposure increases; the floor acts as a soft constraint, not "
-    "a fixed schedule."
+    f"Constant Mix maintains a fixed **{cm_lambda:.0f}%** allocation to risky assets at every rebalance. "
+    "Unlike CPPI, there is no cushion mechanism — the allocation does not respond to drawdowns. "
+    "This means risky exposure is never mechanically reduced in a falling market, "
+    "but also that the strategy avoids the cash-lock risk of CPPI in prolonged downturns."
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -170,9 +171,8 @@ st.subheader("Cumulative Contributions Invested Over Time")
 
 fig_contrib = go.Figure()
 for label, sim, color in [
-    ("CPPI", sim_cppi, AMUNDI_CYAN),
+    ("Constant Mix", sim_cm, AMUNDI_CYAN),
     ("Glidepath", sim_gp, "#E67E22"),
-    ("Constant Mix", sim_cm, AMUNDI_GREY),
 ]:
     cc = sim.get("contribution_cumsum")
     if cc is not None:
@@ -181,7 +181,7 @@ for label, sim, color in [
             name=label, line=dict(color=color, width=2),
         ))
 fig_contrib.update_layout(
-    title="Cumulative Capital Invested; All Strategies",
+    title="Cumulative Capital Invested; Constant Mix vs Glidepath",
     xaxis_title="Investor Age",
     yaxis_title="Cumulative Contributions; Nominal (€)",
     template="plotly_white",
@@ -193,9 +193,9 @@ fig_contrib.update_layout(
 st.plotly_chart(fig_contrib, width='stretch')
 
 st.caption(
-    "All three strategies invest the same annual contribution. "
-    "Differences in the cumulative line are negligible because contributions "
-    "are a deterministic input; the real divergence shows up in terminal wealth."
+    "Both strategies invest the same annual contribution. "
+    "The cumulative lines are identical because contributions are a deterministic input; "
+    "the real divergence shows up in terminal wealth."
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -206,9 +206,8 @@ st.subheader("Terminal Accumulated Wealth; Strategy Comparison")
 
 fig_box = go.Figure()
 for label, sim, color in [
-    ("CPPI", sim_cppi, AMUNDI_CYAN),
+    ("Constant Mix", sim_cm, AMUNDI_CYAN),
     ("Glidepath", sim_gp, "#E67E22"),
-    ("Constant Mix", sim_cm, AMUNDI_GREY),
 ]:
     fig_box.add_trace(go.Box(
         y=sim["ending_wealth"],
@@ -219,7 +218,7 @@ for label, sim, color in [
     ))
 
 fig_box.update_layout(
-    title="Terminal Wealth Distribution at Retirement",
+    title="Terminal Wealth Distribution; Constant Mix vs Glidepath",
     yaxis_title="Terminal Wealth; Nominal (€)",
     template="plotly_white",
     height=440,
@@ -235,3 +234,5 @@ st.caption(
     "Each box shows the interquartile range (P25–P75) with whiskers at 1.5×IQR. "
     "All values are Nominal (€); no inflation adjustment."
 )
+
+build_model_caveats_panel()

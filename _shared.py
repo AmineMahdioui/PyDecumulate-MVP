@@ -181,7 +181,6 @@ def run_lifecycle_simulation(
     # Decumulation phase params
     dec_time_horizon: int,
     dec_withdrawal: float,
-    dec_floor_pct: float,
     # Shared market params
     expected_return: float,
     market_volatility: float,
@@ -192,6 +191,13 @@ def run_lifecycle_simulation(
     block_length: int = 1,
     annual_inflation_rate: float = 0.0,
     Lambda: float = 60.0,
+    lifecycle_mode: str = "CPPI_TO_CM",
+    acc_glidepath_initial: float = 0.80,
+    acc_glidepath_final: float = 0.20,
+    acc_glidepath_shape: str = "linear",
+    dec_glidepath_initial: float = 0.60,
+    dec_glidepath_final: float = 0.30,
+    dec_glidepath_shape: str = "linear",
 ) -> tuple[dict, dict, float]:
     """Run a full lifecycle simulation with per-path handoff at retirement.
 
@@ -221,7 +227,7 @@ def run_lifecycle_simulation(
         initial_wealth=0.0,  # overridden by pathwise handoff
         time_horizon=dec_time_horizon,
         cppi_multiplier=acc_cppi_multiplier,
-        floor_pct=dec_floor_pct,
+        floor_pct=0.0,
         expected_return=expected_return,
         market_volatility=market_volatility,
         risk_free_rate=risk_free_rate,
@@ -259,9 +265,17 @@ def run_lifecycle_simulation(
         acc_returns = MarketSimulator(acc_params).generate_returns(seed=42)
         dec_returns = MarketSimulator(dec_params).generate_returns(seed=123)
 
-    lc: LifecycleResult = LifecycleSimulator(acc_params, dec_params).run(
-        acc_returns, dec_returns
-    )
+    lc: LifecycleResult = LifecycleSimulator(
+        acc_params,
+        dec_params,
+        lifecycle_mode=lifecycle_mode,
+        acc_glidepath_initial=acc_glidepath_initial,
+        acc_glidepath_final=acc_glidepath_final,
+        acc_glidepath_shape=acc_glidepath_shape,
+        dec_glidepath_initial=dec_glidepath_initial,
+        dec_glidepath_final=dec_glidepath_final,
+        dec_glidepath_shape=dec_glidepath_shape,
+    ).run(acc_returns, dec_returns)
 
     retirement_pot_nominal = float(np.median(lc.retirement_wealths_nominal))
 
@@ -283,6 +297,16 @@ def run_lifecycle_simulation(
         lc.accumulation.contributions_made.cumsum(axis=0).mean(axis=1)
     )
 
+    floor_touch_path_pct = None
+    floor_touch_time_pct = None
+    if lifecycle_mode == "CPPI_TO_CM":
+        acc_portfolio = np.asarray(lc.accumulation.portfolio_values, dtype=float)
+        acc_floor = np.asarray(lc.accumulation.floor_values, dtype=float)[:, np.newaxis]
+        scale = np.maximum(np.maximum(np.abs(acc_portfolio), np.abs(acc_floor)), 1.0)
+        at_floor = np.abs(acc_portfolio - acc_floor) <= (1e-6 * scale + 1e-3)
+        floor_touch_path_pct = float(np.mean(np.any(at_floor, axis=0)) * 100.0)
+        floor_touch_time_pct = float(np.mean(at_floor) * 100.0)
+
     sim_acc = {
         "prob_success": acc_analyzer.probability_of_success(),
         "expected_shortfall": acc_analyzer.expected_shortfall(),
@@ -299,6 +323,8 @@ def run_lifecycle_simulation(
         "contribution_cumsum": contribution_cumsum,
         "withdrawal_percentiles": acc_analyzer.withdrawal_percentile_paths(),
         "lambda": acc_params.Lambda / 100.0,
+        "floor_touch_path_pct": floor_touch_path_pct,
+        "floor_touch_time_pct": floor_touch_time_pct,
     }
 
     sim_dec = {
@@ -317,6 +343,8 @@ def run_lifecycle_simulation(
         "contribution_cumsum": None,
         "withdrawal_percentiles": dec_analyzer.withdrawal_percentile_paths(),
         "lambda": dec_params.Lambda / 100.0,
+        "floor_touch_path_pct": None,
+        "floor_touch_time_pct": None,
     }
 
     return sim_acc, sim_dec, retirement_pot_nominal
@@ -1196,9 +1224,9 @@ CAVEATS_TEXT = """\
 
 - GBM assumes constant expected return and volatility — no regime switches, mean-reversion, or fat tails.
 - Lifecycle charts and KPIs are shown in **nominal euro terms** unless explicitly labelled otherwise; the inflation module exists in the codebase but is not yet active in the displayed page outputs.
-- The lifecycle page currently uses **CPPI in accumulation** and a **Constant Mix decumulation handoff**. It is pathwise, but it is not yet a configurable multi-strategy lifecycle engine.
+- The lifecycle page supports **CPPI→Constant Mix** and **Glidepath→Glidepath** pathwise handoff modes.
 - CPPI includes a model floor mechanism (soft cushion constraint); Glidepath and Constant Mix do not provide equivalent floor protection.
-- Retirement comparisons currently support **Constant Mix** and **Glidepath** decumulation.
+- Decumulation currently supports **Constant Mix** and **Glidepath** only. A decumulation floor input is therefore not an active control in retirement-only modes.
 - Withdrawals are fixed in nominal terms on the sustainability page unless a future inflation-aware mode is explicitly enabled.
 - No taxes, transaction costs, liquidity constraints, or stochastic longevity are modelled in the displayed dashboard outputs.
 """
@@ -1214,7 +1242,8 @@ ROADMAP_TEXT = """\
 
 def build_model_caveats_panel() -> None:
     """Render a visible caveats box + expandable technical roadmap."""
-    st.info(CAVEATS_TEXT)
+    with st.expander("Model Caveats", expanded=False):
+        st.markdown(CAVEATS_TEXT)
     with st.expander("Technical Roadmap"):
         st.markdown(ROADMAP_TEXT)
 
@@ -1320,13 +1349,13 @@ def run_sensitivity_sweep(
     withdrawal_rates: list[float],
     horizons: list[int],
     initial_wealth: float,
-    floor_pct: float,
     cppi_multiplier: float,
     lambda_pct: float,
     expected_return: float,
     market_volatility: float,
     risk_free_rate: float,
     rebalance_freq: str,
+    floor_pct: float = 0.0,
     simulation_method: str = "GBM (Parametric)",
     block_length: int = 1,
     strategy_type: str = "Glidepath",

@@ -29,7 +29,7 @@ c1, c2, c3 = st.columns(3)
 with c1:
     strategy_type = st.radio(
         "Strategy",
-        options=["CPPI", "Constant Mix"],
+        options=["Constant Mix", "Glidepath"],
         index=0,
         horizontal=True,
     )
@@ -40,7 +40,14 @@ with c2:
         value=1_000_000, step=100_000, format="%d",
     )
 with c3:
-    floor_pct = st.slider("Floor (%)", min_value=50, max_value=100, value=80, step=5)
+    lambda_pct = st.slider(
+        "CM Risky Allocation (%)",
+        min_value=20,
+        max_value=90,
+        value=60,
+        step=5,
+        help="Used when Constant Mix is selected.",
+    )
 
 c4, c5 = st.columns(2)
 with c4:
@@ -56,14 +63,14 @@ with c5:
         default=[15, 20, 25, 30],
     )
 
-_strategy_map = {"CPPI": "CPPI", "Constant Mix": "CM"}
+_strategy_map = {"Constant Mix": "CM", "Glidepath": "Glidepath"}
 _strat = _strategy_map[strategy_type]
 
 st.caption(
     "Withdrawal rate = annual withdrawal ÷ initial retirement wealth. "
     f"Each cell shows Probability of Success (%) using **{mkt['n_simulations']:,} simulations**. "
-    "Displayed values are nominal and the Glidepath strategy is intentionally excluded here because "
-    "the current codebase does not yet have a dedicated decumulation glidepath engine."
+    "Displayed values are nominal. Decumulation floor is not an active control here because retirement mode uses "
+    "Constant Mix or Glidepath (no DecCPPI mode)."
 )
 
 if not withdrawal_rates or not horizons:
@@ -75,8 +82,9 @@ else:
                 withdrawal_rates=[float(r) for r in withdrawal_rates],
                 horizons=[int(h) for h in horizons],
                 initial_wealth=float(initial_wealth),
-                floor_pct=float(floor_pct),
+                floor_pct=0.0,
                 cppi_multiplier=mkt["cppi_multiplier"],
+                lambda_pct=float(lambda_pct),
                 expected_return=mkt["expected_return"],
                 market_volatility=mkt["market_volatility"],
                 risk_free_rate=mkt["risk_free_rate"],
