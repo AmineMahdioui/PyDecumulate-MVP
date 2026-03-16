@@ -1,4 +1,5 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
 import numpy as np
 from numba import njit, prange
 from dataclasses import dataclass
@@ -19,6 +20,165 @@ class AccumulationResult:
     portfolio_values_nominal: np.ndarray | None   # shape (t_steps, n_sims); nominal portfolio value
     floor_values_nominal: np.ndarray | None       # shape (t_steps,); nominal guaranteed floor
     contributions_made_nominal: np.ndarray | None # shape (t_steps, n_sims); nominal contributions
+
+
+class BaseAccumulationEngine(ABC):
+    """Abstract base class for accumulation strategies.
+    
+    Consolidates common initialization, array management, deflation, and result
+    packaging logic. Child classes override _calculate_floor(), _initialize_state(),
+    and _call_core_function() to implement specific strategies (CPPI, Glidepath, CM).
+    """
+
+    def __init__(self, params: StrategyParameters) -> None:
+        self._params = params
+
+    @abstractmethod
+    def _calculate_floor(self, t_steps: int, exprdt: np.ndarray) -> np.ndarray:
+        """Calculate deterministic floor for the strategy.
+        
+        Returns array of shape (t_steps + 1,). CPPI overrides with cushion-based
+        floor; others return zeros.
+        """
+        pass
+
+    @abstractmethod
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize state arrays Mt_f, Xt_f, Vt_f at t=0.
+        
+        Returns:
+            (Mt_f, Xt_f, Vt_f) all shape (t_steps+1, n_sims) for Mt/Xt/Vt,
+            with initial conditions set at [0, :].
+        """
+        pass
+
+    @abstractmethod
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        contributions_arr: np.ndarray,
+    ) -> None:
+        """Execute the Numba core simulation loop in-place.
+        
+        Modifies Mt_f, Xt_f, Vt_f, contributions_arr arrays in-place.
+        """
+        pass
+
+    def _setup_market_arrays(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Prepare exprdt and gross_returns from input log-returns.
+        
+        Returns:
+            (exprdt, gross_returns) both shape (t_steps, n_sims).
+        """
+        t_steps, n_sims = asset_log_returns.shape
+        
+        if riskless_returns is not None:
+            if riskless_returns.shape != asset_log_returns.shape:
+                raise ValueError(
+                    "riskless_returns must be either None or have the same shape "
+                    "as asset_log_returns."
+                )
+            exprdt = np.exp(riskless_returns)
+        else:
+            exprdt = np.exp(self._params.step_rf).repeat(
+                t_steps * n_sims
+            ).reshape(t_steps, n_sims)
+        
+        gross_returns = np.exp(asset_log_returns)
+        return exprdt, gross_returns
+
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray | None = None,
+        include_nominal_arrays: bool = True,
+    ) -> AccumulationResult:
+        """Execute the accumulation strategy simulation.
+        
+        Parameters
+        ----------
+        asset_log_returns : np.ndarray
+            Log-returns of risky asset, shape (t_steps, n_sims).
+        riskless_returns : np.ndarray | None
+            Optional log-returns of risk-free asset; if None, uses params.step_rf.
+        include_nominal_arrays : bool
+            If True, retain nominal (pre-deflation) arrays for lifecycle integration.
+            If False, set to None to save memory.
+        
+        Returns
+        -------
+        AccumulationResult
+            Deflated outputs ready for dashboard visualization and KPIs.
+        """
+        t_steps, n_sims = asset_log_returns.shape
+
+        # 1. Setup market arrays
+        exprdt, gross_returns = self._setup_market_arrays(asset_log_returns, riskless_returns)
+
+        # 2. Calculate floor (strategy-specific)
+        Pt_f = self._calculate_floor(t_steps, exprdt)
+
+        # 3. Initialize state arrays
+        Mt_f, Xt_f, Vt_f = self._initialize_state(t_steps, n_sims, Pt_f)
+
+        # 4. Initialize contribution tracking
+        contributions_arr = np.zeros((t_steps, n_sims))
+        # Optional turnover tracking (kept commented-out for now to save memory)
+        # turnover_arr = np.zeros((t_steps, n_sims))
+
+        # 5. Call strategy-specific Numba core function
+        self._call_core_function(
+            t_steps, n_sims, exprdt, gross_returns, Pt_f,
+            Mt_f, Xt_f, Vt_f, contributions_arr,
+        )
+
+        # 6. Calculate fractional allocation
+        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
+        risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
+
+        # 7. Retain nominal arrays before deflation (for lifecycle handoff)
+        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
+        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal = turnover_arr.copy() if include_nominal_arrays else None
+
+        # 8. Deflate outputs to real terms (today's purchasing power)
+        _ir = self._params.annual_inflation_rate
+        _dt = self._params.dt
+        portfolio_values_real = deflate(Vt_f[1:], _ir, _dt, start_step=1)
+        floor_values_real = deflate(Pt_f[1:], _ir, _dt, start_step=1)
+        risky_paths_real = deflate(risky_asset_paths, _ir, _dt, start_step=1)
+        contributions_made_real = deflate(contributions_arr, _ir, _dt, start_step=1)
+        # turnover_real = deflate(turnover_arr, _ir, _dt, start_step=1)
+
+        return AccumulationResult(
+            portfolio_values=portfolio_values_real,
+            floor_values=floor_values_real,
+            risky_paths=risky_paths_real,
+            risky_allocation=risky_allocation[1:],
+            contributions_made=contributions_made_real,
+            # turnover=turnover_real,
+            portfolio_values_nominal=portfolio_values_nominal,
+            floor_values_nominal=floor_values_nominal,
+            contributions_made_nominal=contributions_made_nominal,
+            # turnover_nominal=turnover_nominal,
+        )
 
 
 
@@ -103,49 +263,30 @@ def _run_cm_accumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_
             Mt_f[t+1, i] = Mt_target
 
 
-class AccCPPIEngine:
+class AccCPPIEngine(BaseAccumulationEngine):
     """Run the CPPI strategy over a matrix of market returns."""
 
-    def __init__(self, params: StrategyParameters) -> None:
-        self._params = params
-        
-    def run(
-        self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray = None,
-        include_nominal_arrays: bool = True,
-    ) -> AccumulationResult:
-        """Prepares the data and executes the CPPI algorithm."""
-        t_steps, n_sims = asset_log_returns.shape
-        
-        m = self._params.cppi_multiplier
-        C = self._params.step_contribution
-        step_inflation = self._params.step_inflation
-        
-        # 1. Setup Constants 
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError("riskless_returns must be either None or have the same shape as asset_log_returns.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.exp(self._params.step_rf).repeat(t_steps * n_sims).reshape(t_steps, n_sims)
-        
-        gross_returns = np.exp(asset_log_returns)
-        
-        # 2. Pre-calculate the deterministic Floor
+    def _calculate_floor(self, t_steps: int, exprdt: np.ndarray) -> np.ndarray:
+        """Calculate the deterministic floor for CPPI (exponential growth at risk-free rate)."""
         Pt_f = np.zeros(t_steps + 1)
         Pt_f[0] = (self._params.initial_wealth + self._params.step_contribution) * self._params.floor_pct / 100.0
         t_array = np.arange(t_steps + 1)
         Pt_f = Pt_f[0] * np.exp(self._params.step_rf * t_array)
-        
-        # 3. Initialize tracking arrays
+        return Pt_f
+
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize CPPI state with cushion-based risky allocation."""
         Mt_f = np.zeros((t_steps + 1, n_sims))
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
-        contributions_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr = np.zeros((t_steps, n_sims))
 
-        # 4. Set Initial Conditions at t=0
+        # Set initial conditions at t=0
+        m = self._params.cppi_multiplier
         Vt_f[0, :] = self._params.initial_wealth
         cushion_0 = np.maximum(Vt_f[0, :] - Pt_f[0], 0.0)
         
@@ -153,44 +294,30 @@ class AccCPPIEngine:
         Xt_f[0, :] = np.minimum(initial_target_risky, Vt_f[0, :])
         Mt_f[0, :] = Vt_f[0, :] - Xt_f[0, :]
 
-        # 5. Call the fast Numba function
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        contributions_arr: np.ndarray,
+    ) -> None:
+        """Execute the CPPI core loop."""
+        m = self._params.cppi_multiplier
+        C = self._params.step_contribution
+        step_inflation = self._params.step_inflation
+        
         _run_cppi_accumulation_core(
-            t_steps, n_sims, m, exprdt, gross_returns, Pt_f, 
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
-            # turnover_arr
+            t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr,
         )
-        
-        # 6. Calculate fractional allocation
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-        risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
-        
-        # 7. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
-        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
-        # turnover_nominal           = turnover_arr.copy()
 
-        # 8. Deflate outputs to Real terms (today's purchasing power)
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-        portfolio_values_real    = deflate(Vt_f[1:],          _ir, _dt, start_step=1)
-        floor_values_real        = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
-        risky_paths_real         = deflate(risky_asset_paths, _ir, _dt, start_step=1)
-        contributions_made_real  = deflate(contributions_arr, _ir, _dt, start_step=1)
-        # turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1)
-
-        return AccumulationResult(
-            portfolio_values=portfolio_values_real,
-            floor_values=floor_values_real,
-            risky_paths=risky_paths_real,
-            risky_allocation=risky_allocation[1:],
-            contributions_made=contributions_made_real,
-            # turnover=turnover_real,
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            contributions_made_nominal=contributions_made_nominal,
-            # turnover_nominal=turnover_nominal,
-        )
 
 
 class AccLinearGlidepath:
@@ -337,7 +464,7 @@ def _run_glidepath_accumulation_core(t_steps, n_sims, alpha_schedule, exprdt, gr
             Mt_f[t+1, i] = Mt_target
 
 
-class AccGlidepathEngine:
+class AccGlidepathEngine(BaseAccumulationEngine):
     """Run a glidepath strategy over a matrix of market returns.
 
     Unlike Constant Mix (fixed alpha), this engine adjusts the equity
@@ -349,7 +476,7 @@ class AccGlidepathEngine:
                  initial_equity: float = 0.80,
                  final_equity: float = 0.20,
                  shape: str = "linear") -> None:
-        self._params = params
+        super().__init__(params)
         self._shape = shape
         self._glidepath = AccLinearGlidepath(
             initial_equity_allocation=initial_equity,
@@ -358,22 +485,8 @@ class AccGlidepathEngine:
             shape=shape,
         )
 
-    def run(
-        self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray = None,
-        include_nominal_arrays: bool = True,
-    ) -> AccumulationResult:
-        """Prepares data and executes the glidepath algorithm."""
-        t_steps, n_sims = asset_log_returns.shape
-
-        C = self._params.step_contribution
-        step_inflation = self._params.step_inflation
-        steps_per_year = self._params.steps_per_year
-
-        # Build per-step alpha schedule using normalised tau = t / max(n_steps-1, 1)
-        # This guarantees the schedule hits exactly initial_equity at step 0
-        # and final_equity at the final step regardless of rebalance frequency.
+    def _build_alpha_schedule(self, t_steps: int) -> np.ndarray:
+        """Build per-step alpha schedule from glidepath parameters."""
         a0 = self._glidepath.initial_equity_allocation
         a1 = self._glidepath.final_equity_allocation
         max_t = max(t_steps - 1, 1)
@@ -386,157 +499,101 @@ class AccGlidepathEngine:
                 alpha_schedule[t] = a0 + (a1 - a0) * tau ** 2
             else:  # concave
                 alpha_schedule[t] = a0 + (a1 - a0) * (1.0 - (1.0 - tau) ** 2)
+        return alpha_schedule
 
-        # 1. Setup Constants
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError(
-                    "riskless_returns must be either None or have the same shape as asset_log_returns.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.exp(self._params.step_rf).repeat(
-                t_steps * n_sims).reshape(t_steps, n_sims)
+    def _calculate_floor(self, t_steps: int, exprdt: np.ndarray) -> np.ndarray:
+        """Glidepath has no floor; return zeros."""
+        return np.zeros(t_steps + 1)
 
-        gross_returns = np.exp(asset_log_returns)
-
-        # Glidepath has no floor, so we track zeros
-        Pt_f = np.zeros(t_steps + 1)
-
-        # 2. Initialize tracking arrays
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize glidepath state with initial equity allocation."""
         Mt_f = np.zeros((t_steps + 1, n_sims))
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
-        contributions_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr = np.zeros((t_steps, n_sims))
 
-        # 3. Set Initial Conditions at t=0
-        alpha_0 = alpha_schedule[0]
+        # Build alpha schedule and get initial alpha
+        self._alpha_schedule = self._build_alpha_schedule(t_steps)
+        alpha_0 = self._alpha_schedule[0]
+
+        # Set initial conditions at t=0
         Vt_f[0, :] = self._params.initial_wealth
         Xt_f[0, :] = alpha_0 * self._params.initial_wealth
         Mt_f[0, :] = Vt_f[0, :] - Xt_f[0, :]
 
-        # 4. Call the fast Numba function
-        _run_glidepath_accumulation_core(
-            t_steps, n_sims, alpha_schedule, exprdt, gross_returns,
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
-            # turnover_arr,
-        )
+        return Mt_f, Xt_f, Vt_f
 
-        # 5. Calculate fractional allocation
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-        risky_asset_paths = self._params.initial_wealth * np.cumprod(
-            gross_returns, axis=0)
-
-        # 6. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
-        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
-        # turnover_nominal           = turnover_arr.copy()
-
-        # 7. Deflate outputs to Real terms
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-        portfolio_values_real   = deflate(Vt_f[1:],          _ir, _dt, start_step=1)
-        floor_values_real       = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
-        risky_paths_real        = deflate(risky_asset_paths, _ir, _dt, start_step=1)
-        contributions_made_real = deflate(contributions_arr, _ir, _dt, start_step=1)
-        # turnover_real           = deflate(turnover_arr,      _ir, _dt, start_step=1)
-
-        return AccumulationResult(
-            portfolio_values=portfolio_values_real,
-            floor_values=floor_values_real,
-            risky_paths=risky_paths_real,
-            risky_allocation=risky_allocation[1:],
-            contributions_made=contributions_made_real,
-            # turnover=turnover_real,
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            contributions_made_nominal=contributions_made_nominal,
-            # turnover_nominal=turnover_nominal,
-        )
-
-
-class AccConstantMixEngine:
-    """Run the Constant Mix strategy over a matrix of market returns."""
-
-    def __init__(self, params: StrategyParameters) -> None:
-        self._params = params
-        
-    def run(
+    def _call_core_function(
         self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray = None,
-        deflated: bool = False,
-        include_nominal_arrays: bool = True,
-    ) -> AccumulationResult:
-        """Prepares the data and executes the Constant Mix algorithm."""
-        t_steps, n_sims = asset_log_returns.shape 
-        
-        alpha = self._params.Lambda / 100.0  # Convert percentage to decimal
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        contributions_arr: np.ndarray,
+    ) -> None:
+        """Execute the glidepath core loop with time-varying alpha."""
         C = self._params.step_contribution
         step_inflation = self._params.step_inflation
         
-        # 1. Setup Constants 
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError("riskless_returns must be either None or have the same shape as asset_log_returns.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.exp(self._params.step_rf).repeat(t_steps * n_sims).reshape(t_steps, n_sims)
-        
-        gross_returns = np.exp(asset_log_returns)
-        
-        # Constant mix has no floor, so we track zeros
-        Pt_f = np.zeros(t_steps + 1)
+        _run_glidepath_accumulation_core(
+            t_steps, n_sims, self._alpha_schedule, exprdt, gross_returns,
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr,
+        )
 
-        # 2. Initialize tracking arrays
+
+class AccConstantMixEngine(BaseAccumulationEngine):
+    """Run the Constant Mix strategy over a matrix of market returns."""
+
+    def _calculate_floor(self, t_steps: int, exprdt: np.ndarray) -> np.ndarray:
+        """Constant Mix has no floor; return zeros."""
+        return np.zeros(t_steps + 1)
+
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize Constant Mix state with fixed equity allocation."""
         Mt_f = np.zeros((t_steps + 1, n_sims))
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
-        contributions_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr = np.zeros((t_steps, n_sims))
 
-        # 3. Set Initial Conditions at t=0
+        # Set initial conditions at t=0
+        alpha = self._params.Lambda / 100.0
         Vt_f[0, :] = self._params.initial_wealth
         Xt_f[0, :] = alpha * self._params.initial_wealth
         Mt_f[0, :] = Vt_f[0, :] - Xt_f[0, :]
 
-        # 4. Call the fast Numba function
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        contributions_arr: np.ndarray,
+    ) -> None:
+        """Execute the Constant Mix core loop."""
+        alpha = self._params.Lambda / 100.0
+        C = self._params.step_contribution
+        step_inflation = self._params.step_inflation
+        
         _run_cm_accumulation_core(
-            t_steps, n_sims, alpha, exprdt, gross_returns, 
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
-            # turnover_arr
-        )
-        
-        # 5. Calculate fractional allocation (avoiding divide-by-zero if wealth hits 0)
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-        risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
-        
-        # 6. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
-        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
-        # turnover_nominal           = turnover_arr.copy()
-
-        # 7. Deflate outputs to Real terms (today's purchasing power)
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-        portfolio_values_real    = deflate(Vt_f[1:],          _ir, _dt, start_step=1) if deflated else Vt_f[1:]
-        floor_values_real        = deflate(Pt_f[1:],          _ir, _dt, start_step=1) if deflated else Pt_f[1:]
-        risky_paths_real         = deflate(risky_asset_paths, _ir, _dt, start_step=1) if deflated else risky_asset_paths
-        contributions_made_real  = deflate(contributions_arr, _ir, _dt, start_step=1) if deflated else contributions_arr
-        # turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
-
-        return AccumulationResult(
-            portfolio_values=portfolio_values_real,
-            floor_values=floor_values_real,
-            risky_paths=risky_paths_real,
-            risky_allocation=risky_allocation[1:],
-            contributions_made=contributions_made_real,
-            # turnover=turnover_real,
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            contributions_made_nominal=contributions_made_nominal,
-            # turnover_nominal=turnover_nominal,
+            t_steps, n_sims, alpha, exprdt, gross_returns,
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr,
         )
 

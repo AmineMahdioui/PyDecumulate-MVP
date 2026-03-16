@@ -1,4 +1,5 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
 import numpy as np
 from numba import njit, prange
 from dataclasses import dataclass
@@ -19,6 +20,222 @@ class DecumulationResult:
     portfolio_values_nominal: np.ndarray | None  # shape (t_steps, n_sims); nominal portfolio value
     floor_values_nominal: np.ndarray | None      # shape (t_steps,); nominal guaranteed floor
     withdrawals_made_nominal: np.ndarray | None  # shape (t_steps, n_sims); nominal withdrawals
+
+
+class BaseDecumulationEngine(ABC):
+    """Abstract base class for decumulation strategies.
+    
+    Consolidates common initialization, array management, deflation, and result
+    packaging logic. Child classes override _calculate_floor(), _initialize_state(),
+    and _call_core_function() to implement specific strategies (CPPI, Glidepath, CM).
+    """
+
+    def __init__(self, params: StrategyParameters) -> None:
+        self._params = params
+
+    @abstractmethod
+    def _calculate_floor(self, t_steps: int) -> np.ndarray:
+        """Calculate deterministic floor for the strategy.
+        
+        Returns array of shape (t_steps + 1,). CPPI overrides with PV-based
+        floor; others return zeros.
+        """
+        pass
+
+    @abstractmethod
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize state arrays Mt_f, Xt_f, Vt_f at t=0.
+        
+        Supports lifecycle handoff (per-path initial state) or standalone
+        (uniform initial wealth).
+        
+        Returns:
+            (Mt_f, Xt_f, Vt_f) all shape (t_steps+1, n_sims) for Mt/Xt/Vt,
+            with initial conditions set at [0, :].
+        """
+        pass
+
+    @abstractmethod
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        withdrawals_arr: np.ndarray,
+    ) -> None:
+        """Execute the Numba core simulation loop in-place.
+        
+        Modifies Mt_f, Xt_f, Vt_f, withdrawals_arr arrays in-place.
+        """
+        pass
+
+    def _validate_lifecycle_handoff(
+        self,
+        n_sims: int,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> None:
+        """Validate lifecycle handoff arguments.
+        
+        Raises ValueError if only one of initial_wealths or initial_risky_allocation
+        is provided, or if shapes don't match.
+        """
+        _has_iw = initial_wealths is not None
+        _has_ira = initial_risky_allocation is not None
+        
+        if _has_iw ^ _has_ira:
+            raise ValueError(
+                "lifecycle handoff requires both initial_wealths and "
+                "initial_risky_allocation, or neither."
+            )
+        if _has_iw:
+            if initial_wealths.shape != (n_sims,):
+                raise ValueError(
+                    f"initial_wealths must have shape ({n_sims},), "
+                    f"got {initial_wealths.shape}."
+                )
+            if initial_risky_allocation.shape != (n_sims,):
+                raise ValueError(
+                    f"initial_risky_allocation must have shape ({n_sims},), "
+                    f"got {initial_risky_allocation.shape}."
+                )
+            if np.any(initial_risky_allocation < 0.0) or np.any(initial_risky_allocation > 1.0):
+                raise ValueError(
+                    "initial_risky_allocation values must be in [0.0, 1.0]."
+                )
+
+    def _setup_market_arrays(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Prepare exprdt and gross_returns from input log-returns.
+        
+        Returns:
+            (exprdt, gross_returns) both shape (t_steps, n_sims).
+        """
+        t_steps, n_sims = asset_log_returns.shape
+        
+        if riskless_returns is not None:
+            if riskless_returns.shape != asset_log_returns.shape:
+                raise ValueError(
+                    "riskless_returns must be either None or have the same shape "
+                    "as asset_log_returns."
+                )
+            exprdt = np.exp(riskless_returns)
+        else:
+            exprdt = np.full((t_steps, n_sims), np.exp(self._params.step_rf))
+        
+        gross_returns = np.exp(asset_log_returns)
+        return exprdt, gross_returns
+
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray | None = None,
+        initial_wealths: np.ndarray | None = None,
+        initial_risky_allocation: np.ndarray | None = None,
+        deflated: bool = True,
+        include_nominal_arrays: bool = True,
+    ) -> DecumulationResult:
+        """Execute the decumulation strategy simulation.
+        
+        Parameters
+        ----------
+        asset_log_returns : np.ndarray
+            Log-returns of risky asset, shape (t_steps, n_sims).
+        riskless_returns : np.ndarray | None
+            Optional log-returns of risk-free asset; if None, uses params.step_rf.
+        initial_wealths : np.ndarray | None
+            Per-path nominal wealth at retirement, shape (n_sims,).
+            Provide together with initial_risky_allocation for lifecycle handoff.
+        initial_risky_allocation : np.ndarray | None
+            Per-path risky fraction at retirement, shape (n_sims,).
+            Provide together with initial_wealths for lifecycle handoff.
+        deflated : bool
+            If True (default), outputs are deflated to real terms.
+        include_nominal_arrays : bool
+            If True, retain nominal (pre-deflation) arrays for lifecycle integration.
+            If False, set to None to save memory.
+        
+        Returns
+        -------
+        DecumulationResult
+            Deflated outputs ready for dashboard visualization and KPIs.
+        """
+        t_steps, n_sims = asset_log_returns.shape
+
+        # 1. Validate lifecycle handoff arguments
+        self._validate_lifecycle_handoff(n_sims, initial_wealths, initial_risky_allocation)
+
+        # 2. Setup market arrays
+        exprdt, gross_returns = self._setup_market_arrays(asset_log_returns, riskless_returns)
+
+        # 3. Calculate floor (strategy-specific)
+        Pt_f = self._calculate_floor(t_steps)
+
+        # 4. Initialize state arrays
+        Mt_f, Xt_f, Vt_f = self._initialize_state(
+            t_steps, n_sims, Pt_f, initial_wealths, initial_risky_allocation
+        )
+
+        # 5. Initialize withdrawal tracking
+        withdrawals_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
+
+        # 6. Call strategy-specific Numba core function
+        self._call_core_function(
+            t_steps, n_sims, exprdt, gross_returns, Pt_f,
+            Mt_f, Xt_f, Vt_f, withdrawals_arr,
+        )
+
+        # 7. Calculate fractional allocation
+        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
+
+        # 8. Risky benchmark path (respects per-path initial wealth for lifecycle handoff)
+        if initial_wealths is not None:
+            risky_asset_paths = initial_wealths[np.newaxis, :] * np.cumprod(gross_returns, axis=0)
+        else:
+            risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
+
+        # 9. Retain nominal arrays before deflation (for lifecycle integration)
+        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
+        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal = turnover_arr.copy() if include_nominal_arrays else None
+
+        # 10. Deflate outputs to real terms (today's purchasing power)
+        _ir = self._params.annual_inflation_rate
+        _dt = self._params.dt
+        
+        def _d(arr: np.ndarray) -> np.ndarray:
+            return deflate(arr, _ir, _dt, start_step=1) if deflated else arr
+
+        return DecumulationResult(
+            portfolio_values=_d(Vt_f[1:]),
+            floor_values=_d(Pt_f[1:]),
+            risky_paths=_d(risky_asset_paths),
+            risky_allocation=risky_allocation[1:],
+            withdrawals_made=_d(withdrawals_arr),
+            # turnover=_d(turnover_arr),
+            portfolio_values_nominal=portfolio_values_nominal,
+            floor_values_nominal=floor_values_nominal,
+            withdrawals_made_nominal=withdrawals_made_nominal,
+            # turnover_nominal=turnover_nominal,
+        )
+
 
 
 @njit(parallel=True)
@@ -58,43 +275,17 @@ def _run_cppi_decumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
             Xt_f[t+1, i] = Xt_target
             Mt_f[t+1, i] = Mt_target
 
-class DecCPPIEngine:
+class DecCPPIEngine(BaseDecumulationEngine):
     """Run the CPPI strategy over a matrix of market returns."""
 
-    def __init__(self, params: StrategyParameters) -> None:
-        self._params = params
-        
-    def run(
-        self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray = None,
-        include_nominal_arrays: bool = True,
-    ) -> DecumulationResult:
-        """Prepares the data and executes the CPPI algorithm."""
-        t_steps, n_sims = asset_log_returns.shape
-        
-        m = self._params.cppi_multiplier
+    def _calculate_floor(self, t_steps: int) -> np.ndarray:
+        """Calculate the deterministic floor for CPPI (PV of inflation-adjusted withdrawals)."""
         W = self._params.step_withdrawal
         step_inflation = self._params.step_inflation
-        
-        # 1. Setup Constants 
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError("riskless_returns must be either None or have the same shape as asset_log_returns.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.exp(self._params.step_rf).repeat(t_steps * n_sims).reshape(t_steps, n_sims)
-        
-        gross_returns = np.exp(asset_log_returns)
-        
-        # 2. Pre-calculate the deterministic Floor for a GROWING annuity
-        # Floor at time k = PV of inflation-adjusted withdrawals from step k to T-1
-        # Uses backward recursion: Pt_f[k] = W*(1+g)^k + Pt_f[k+1]/(1+r)
-        r_step = float(np.expm1(self._params.step_rf))  # (1+r) - 1 = r
+        r_step = float(np.expm1(self._params.step_rf))
         g_step = step_inflation
         
         Pt_f = np.zeros(t_steps + 1)
-        # Pt_f[t_steps] = 0 (already initialized)
         # Build backwards from t_steps-1 to 0
         for k in range(t_steps - 1, -1, -1):
             # Withdrawal at step k (in nominal terms)
@@ -103,61 +294,59 @@ class DecCPPIEngine:
             discount = 1.0 / (1.0 + r_step) if r_step > 1e-12 else 1.0
             Pt_f[k] = withdrawal_at_k + Pt_f[k + 1] * discount
         
-        # Apply the floor percentage factor if the user only wants to guarantee a subset (e.g., 80%)
+        # Apply the floor percentage factor
         Pt_f = Pt_f * (self._params.floor_pct / 100.0)
-        
-        # 3. Initialize tracking arrays
+        return Pt_f
+
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize CPPI state with cushion-based risky allocation."""
         Mt_f = np.zeros((t_steps + 1, n_sims))
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
-        withdrawals_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr = np.zeros((t_steps, n_sims))
-        
-        # 4. Set Initial Conditions at t=0
-        Vt_f[0, :] = self._params.initial_wealth
+
+        m = self._params.cppi_multiplier
+        _has_iw = initial_wealths is not None
+
+        # Set initial conditions at t=0
+        if _has_iw:
+            Vt_f[0, :] = initial_wealths
+        else:
+            Vt_f[0, :] = self._params.initial_wealth
+
         cushion_0 = np.maximum(Vt_f[0, :] - Pt_f[0], 0.0)
-        
         initial_target_risky = m * cushion_0
         Xt_f[0, :] = np.minimum(initial_target_risky, Vt_f[0, :])
         Mt_f[0, :] = Vt_f[0, :] - Xt_f[0, :]
+
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        withdrawals_arr: np.ndarray,
+    ) -> None:
+        """Execute the CPPI core loop."""
+        m = self._params.cppi_multiplier
+        W = self._params.step_withdrawal
+        step_inflation = self._params.step_inflation
         
-        # 5. Call the fast Numba function
         _run_cppi_decumulation_core(
-            t_steps, n_sims, m, exprdt, gross_returns, Pt_f, 
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
-            # turnover_arr
-        )
-        
-        # 6. Calculate fractional allocation
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-        risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
-        
-        # 7. Retain nominal arrays before deflation
-        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
-        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
-        # turnover_nominal         = turnover_arr.copy()
-
-        # 8. Deflate outputs to Real terms (today's purchasing power)
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-        portfolio_values_real = deflate(Vt_f[1:],          _ir, _dt, start_step=1)
-        floor_values_real     = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
-        risky_paths_real      = deflate(risky_asset_paths, _ir, _dt, start_step=1)
-        withdrawals_made_real  = deflate(withdrawals_arr,  _ir, _dt, start_step=1)
-        # turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1)
-
-        return DecumulationResult(
-            portfolio_values=portfolio_values_real,
-            floor_values=floor_values_real,
-            risky_paths=risky_paths_real,
-            risky_allocation=risky_allocation[1:],
-            withdrawals_made=withdrawals_made_real,
-            # turnover=turnover_real,
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            withdrawals_made_nominal=withdrawals_made_nominal,
-            # turnover_nominal=turnover_nominal,
+            t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr,
         )
 
 
@@ -199,80 +388,30 @@ def _run_cm_decumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_
 
 
 
-class DecConstantMixEngine:
+class DecConstantMixEngine(BaseDecumulationEngine):
     """Run the Constant Mix strategy over a matrix of market returns."""
 
-    def __init__(self, params: StrategyParameters) -> None:
-        self._params = params
-        
-    def run(
+    def _calculate_floor(self, t_steps: int) -> np.ndarray:
+        """Constant Mix has no floor; return zeros."""
+        return np.zeros(t_steps + 1)
+
+    def _initialize_state(
         self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray | None = None,
-        initial_wealths: np.ndarray | None = None,
-        initial_risky_allocation: np.ndarray | None = None,
-        deflated: bool = True,
-        include_nominal_arrays: bool = True,
-    ) -> DecumulationResult:
-        """Prepares the data and executes the Constant Mix algorithm.
-
-        When ``initial_wealths`` and ``initial_risky_allocation`` are both
-        provided (lifecycle handoff mode), the simulation starts from the
-        per-path terminal state of the accumulation phase.  When both are
-        ``None`` (standalone mode), it falls back to ``params.initial_wealth``
-        with a uniform alpha allocation.
-        """
-        t_steps, n_sims = asset_log_returns.shape
-
-        # ---- Validate lifecycle handoff arguments --------------------------------
-        _has_iw  = initial_wealths is not None
-        _has_ira = initial_risky_allocation is not None
-        if _has_iw ^ _has_ira:
-            raise ValueError(
-                "lifecycle handoff requires both initial_wealths and "
-                "initial_risky_allocation, or neither."
-            )
-        if _has_iw:
-            if initial_wealths.shape != (n_sims,):
-                raise ValueError(
-                    f"initial_wealths must have shape ({n_sims},), "
-                    f"got {initial_wealths.shape}."
-                )
-            if initial_risky_allocation.shape != (n_sims,):
-                raise ValueError(
-                    f"initial_risky_allocation must have shape ({n_sims},), "
-                    f"got {initial_risky_allocation.shape}."
-                )
-            if np.any(initial_risky_allocation < 0.0) or np.any(initial_risky_allocation > 1.0):
-                raise ValueError(
-                    "initial_risky_allocation values must be in [0.0, 1.0]."
-                )
-
-        alpha = self._params.Lambda / 100.0  # Convert percentage to decimal
-        W = self._params.step_withdrawal
-        step_inflation = self._params.step_inflation
-        
-        # 1. Setup Constants 
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError("riskless_returns must be either None or have the same shape as asset_log_returns.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.exp(self._params.step_rf).repeat(t_steps * n_sims).reshape(t_steps, n_sims)
-            
-        gross_returns = np.exp(asset_log_returns)
-        
-        # Constant mix has no floor, so we just track zeros
-        Pt_f = np.zeros(t_steps + 1)
-        
-        # 2. Initialize tracking arrays
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize Constant Mix state with fixed equity allocation or per-path handoff."""
         Mt_f = np.zeros((t_steps + 1, n_sims))
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
-        withdrawals_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr = np.zeros((t_steps, n_sims))
 
-        # 3. Set Initial Conditions at t=0 (pathwise handoff or scalar fallback)
+        alpha = self._params.Lambda / 100.0
+        _has_iw = initial_wealths is not None
+
+        # Set initial conditions at t=0 (pathwise handoff or scalar fallback)
         if _has_iw:
             # Lifecycle handoff: per-path terminal accumulation state
             Vt_f[0, :] = initial_wealths
@@ -284,47 +423,28 @@ class DecConstantMixEngine:
             Xt_f[0, :] = alpha * self._params.initial_wealth
             Mt_f[0, :] = Vt_f[0, :] - Xt_f[0, :]
 
-        # 4. Call the fast, multi-threaded Numba function
-        _run_cm_decumulation_core(
-            t_steps, n_sims, alpha, exprdt, gross_returns, 
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
-            # turnover_arr
-        )
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        withdrawals_arr: np.ndarray,
+    ) -> None:
+        """Execute the Constant Mix core loop."""
+        alpha = self._params.Lambda / 100.0
+        W = self._params.step_withdrawal
+        step_inflation = self._params.step_inflation
         
-        # 5. Calculate fractional allocation (avoiding divide-by-zero if wealth hits 0)
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-
-        # 6. Risky benchmark: full wealth invested in risky asset — respects pathwise starting wealth
-        if _has_iw:
-            risky_asset_paths = initial_wealths[np.newaxis, :] * np.cumprod(gross_returns, axis=0)
-        else:
-            risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
-
-        # 7. Retain nominal arrays before deflation (for lifecycle integration)
-        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
-        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
-
-        # 8. Deflate outputs to Real terms (today's purchasing power)
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-        portfolio_values_real = deflate(Vt_f[1:],          _ir, _dt, start_step=1) if deflated else Vt_f[1:]
-        floor_values_real     = deflate(Pt_f[1:],          _ir, _dt, start_step=1) if deflated else Pt_f[1:]
-        risky_paths_real      = deflate(risky_asset_paths, _ir, _dt, start_step=1) if deflated else risky_asset_paths
-        withdrawals_made_real = deflate(withdrawals_arr,   _ir, _dt, start_step=1) if deflated else withdrawals_arr
-        # turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
-
-        return DecumulationResult(
-            portfolio_values=portfolio_values_real,
-            floor_values=floor_values_real,
-            risky_paths=risky_paths_real,
-            risky_allocation=risky_allocation[1:],
-            withdrawals_made=withdrawals_made_real,
-            # turnover=turnover_real,
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            withdrawals_made_nominal=withdrawals_made_nominal,
-            # turnover_nominal=turnover_nominal,
+        _run_cm_decumulation_core(
+            t_steps, n_sims, alpha, exprdt, gross_returns,
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr,
         )
 
 
@@ -374,7 +494,7 @@ def _run_glidepath_decumulation_core(
             Mt_f[t + 1, i] = Mt_target
 
 
-class DecGlidepathEngine:
+class DecGlidepathEngine(BaseDecumulationEngine):
     """Run a time-varying Glidepath strategy during decumulation.
 
     The risky equity allocation glides deterministically from
@@ -393,17 +513,6 @@ class DecGlidepathEngine:
     from retirement onwards.  ``initial_risky_allocation`` is accepted for
     API symmetry with ``DecConstantMixEngine`` but is **not used** for
     allocation.
-
-    Parameters
-    ----------
-    params:
-        Simulation parameters (``time_horizon``, ``annual_withdrawal``, etc.).
-    initial_equity:
-        Risky fraction at retirement (tau = 0).  Default ``0.60``.
-    final_equity:
-        Risky fraction at end of horizon (tau = 1).  Default ``0.20``.
-    shape:
-        ``"linear"`` | ``"convex"`` | ``"concave"``.  Default ``"linear"``.
     """
 
     def __init__(
@@ -413,14 +522,14 @@ class DecGlidepathEngine:
         final_equity: float = 0.20,
         shape: str = "linear",
     ) -> None:
+        super().__init__(params)
         if shape not in {"linear", "convex", "concave"}:
             raise ValueError(
                 f"shape must be 'linear', 'convex', or 'concave', got '{shape}'."
             )
-        self._params         = params
         self._initial_equity = float(initial_equity)
-        self._final_equity   = float(final_equity)
-        self._shape          = shape
+        self._final_equity = float(final_equity)
+        self._shape = shape
 
     def _build_alpha_schedule(self, t_steps: int) -> np.ndarray:
         """Return a ``(t_steps,)`` array of per-step risky fractions."""
@@ -434,76 +543,30 @@ class DecGlidepathEngine:
             schedule = a0 + (a1 - a0) * (1.0 - (1.0 - tau) ** 2)
         return np.clip(schedule, 0.0, 1.0)
 
-    def run(
+    def _calculate_floor(self, t_steps: int) -> np.ndarray:
+        """Glidepath has no floor; return zeros."""
+        return np.zeros(t_steps + 1)
+
+    def _initialize_state(
         self,
-        asset_log_returns: np.ndarray,
-        riskless_returns: np.ndarray | None = None,
-        initial_wealths: np.ndarray | None = None,
-        initial_risky_allocation: np.ndarray | None = None,
-        deflated: bool = True,
-        include_nominal_arrays: bool = True,
-    ) -> DecumulationResult:
-        """Execute the glidepath decumulation simulation.
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize glidepath state with initial equity allocation."""
+        Mt_f = np.zeros((t_steps + 1, n_sims))
+        Xt_f = np.zeros((t_steps + 1, n_sims))
+        Vt_f = np.zeros((t_steps + 1, n_sims))
 
-        Parameters
-        ----------
-        asset_log_returns:
-            Log-return matrix, shape ``(t_steps, n_sims)``.
-        riskless_returns:
-            Optional per-step risk-free log-returns, same shape.
-        initial_wealths:
-            Per-path nominal wealth at retirement, shape ``(n_sims,)``.
-            Provide together with ``initial_risky_allocation`` for lifecycle
-            pathwise handoff; omit for standalone decumulation.
-        initial_risky_allocation:
-            Per-path risky fraction at retirement, shape ``(n_sims,)``.
-            Accepted for API symmetry — not used for allocation (the
-            glidepath schedule starts at ``initial_equity`` for all paths).
-        deflated:
-            If ``True`` (default), outputs are deflated to real terms.
-        """
-        t_steps, n_sims = asset_log_returns.shape
+        # Build alpha schedule and get initial alpha
+        self._alpha_schedule = self._build_alpha_schedule(t_steps)
+        alpha0 = float(self._alpha_schedule[0])
 
-        # ---- Validate lifecycle handoff arguments ----------------------------
-        _has_iw  = initial_wealths is not None
-        _has_ira = initial_risky_allocation is not None
-        if _has_iw ^ _has_ira:
-            raise ValueError(
-                "lifecycle handoff requires both initial_wealths and "
-                "initial_risky_allocation, or neither."
-            )
-        if _has_iw and initial_wealths.shape != (n_sims,):
-            raise ValueError(
-                f"initial_wealths must have shape ({n_sims},), "
-                f"got {initial_wealths.shape}."
-            )
+        _has_iw = initial_wealths is not None
 
-        W              = self._params.step_withdrawal
-        step_inflation = self._params.step_inflation
-        alpha_schedule = self._build_alpha_schedule(t_steps)
-
-        # ---- Market return arrays --------------------------------------------
-        if riskless_returns is not None:
-            if riskless_returns.shape != asset_log_returns.shape:
-                raise ValueError("riskless_returns must match asset_log_returns shape.")
-            exprdt = np.exp(riskless_returns)
-        else:
-            exprdt = np.full((t_steps, n_sims), np.exp(self._params.step_rf))
-
-        gross_returns = np.exp(asset_log_returns)
-
-        # ---- No CPPI floor — zeros throughout --------------------------------
-        Pt_f = np.zeros(t_steps + 1)
-
-        # ---- State arrays ----------------------------------------------------
-        Mt_f            = np.zeros((t_steps + 1, n_sims))
-        Xt_f            = np.zeros((t_steps + 1, n_sims))
-        Vt_f            = np.zeros((t_steps + 1, n_sims))
-        withdrawals_arr = np.zeros((t_steps, n_sims))
-        # turnover_arr    = np.zeros((t_steps, n_sims))
-
-        # ---- Initial conditions (t = 0) -------------------------------------
-        alpha0 = float(alpha_schedule[0])
+        # Initial conditions (t = 0) - glidepath schedule starts at initial_equity for all paths
         if _has_iw:
             # Lifecycle handoff: per-path nominal wealth; glidepath sets alpha
             Vt_f[0, :] = initial_wealths
@@ -515,44 +578,25 @@ class DecGlidepathEngine:
             Xt_f[0, :] = alpha0 * W0
             Mt_f[0, :] = W0 - Xt_f[0, :]
 
-        # ---- Numba kernel ---------------------------------------------------
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        withdrawals_arr: np.ndarray,
+    ) -> None:
+        """Execute the glidepath core loop with time-varying alpha."""
+        W = self._params.step_withdrawal
+        step_inflation = self._params.step_inflation
+        
         _run_glidepath_decumulation_core(
-            t_steps, n_sims, alpha_schedule, exprdt, gross_returns,
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
-            # turnover_arr,
-        )
-
-        # ---- Fractional allocation (guard against zero wealth) ---------------
-        risky_allocation = Xt_f / np.maximum(Vt_f, 1e-8)
-
-        # ---- Risky benchmark path -------------------------------------------
-        if _has_iw:
-            risky_asset_paths = initial_wealths[np.newaxis, :] * np.cumprod(gross_returns, axis=0)
-        else:
-            risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
-
-        # ---- Retain nominal arrays ------------------------------------------
-        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
-        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
-        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
-        # turnover_nominal         = turnover_arr.copy()
-
-        # ---- Deflate to real terms ------------------------------------------
-        _ir = self._params.annual_inflation_rate
-        _dt = self._params.dt
-
-        def _d(arr: np.ndarray) -> np.ndarray:
-            return deflate(arr, _ir, _dt, start_step=1) if deflated else arr
-
-        return DecumulationResult(
-            portfolio_values=_d(Vt_f[1:]),
-            floor_values=_d(Pt_f[1:]),
-            risky_paths=_d(risky_asset_paths),
-            risky_allocation=risky_allocation[1:],
-            withdrawals_made=_d(withdrawals_arr),
-            # turnover=_d(turnover_arr),
-            portfolio_values_nominal=portfolio_values_nominal,
-            floor_values_nominal=floor_values_nominal,
-            withdrawals_made_nominal=withdrawals_made_nominal,
-            # turnover_nominal=turnover_nominal,
+            t_steps, n_sims, self._alpha_schedule, exprdt, gross_returns,
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr,
         )
