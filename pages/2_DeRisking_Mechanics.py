@@ -59,6 +59,7 @@ gp_shape = st.sidebar.radio(
         "Concave: aggressive de-risking early, flattens later."
     ),
 )
+run_sims = st.sidebar.button("Run Simulation", type="primary", use_container_width=True, key="dr_run")
 
 _sim_kw = dict(
     initial_wealth=float(initial_wealth),
@@ -77,14 +78,24 @@ _sim_kw = dict(
     block_length=mkt["block_length"],
 )
 
-sim_cm = run_simulation(**_sim_kw, strategy_type="CM")
-sim_gp = run_simulation(
-    **_sim_kw,
-    strategy_type="Glidepath",
-    glidepath_initial=gp_initial,
-    glidepath_final=gp_final,
-    glidepath_shape=gp_shape,
-)
+if ("derisking_sims" not in st.session_state) or run_sims:
+    st.session_state["derisking_sims"] = (
+        run_simulation(**_sim_kw, strategy_type="CM"),
+        run_simulation(
+            **_sim_kw,
+            strategy_type="Glidepath",
+            glidepath_initial=gp_initial,
+            glidepath_final=gp_final,
+            glidepath_shape=gp_shape,
+        ),
+    )
+
+if "derisking_sims" not in st.session_state:
+    st.title("Accumulation & De-Risking Mechanics")
+    st.info("Configure parameters in the sidebar, then click **Run Simulation** to begin.")
+    st.stop()
+
+sim_cm, sim_gp = st.session_state["derisking_sims"]
 
 n_steps = len(sim_cm["dates"])
 retirement_age = start_age + time_horizon
@@ -96,35 +107,39 @@ st.caption(
     f"over the accumulation horizon. Investor age {start_age} → {retirement_age}."
 )
 
-st.subheader("Constant Mix: Fixed Risky Allocation")
-st.plotly_chart(
-    build_stacked_allocation_chart(
-        sim_cm,
-        age_axis,
-        title=f"Constant Mix Accumulation; Risky vs Safe Over Time ({cm_lambda:.0f}% Risky)",
-    ),
-    width='stretch',
-)
-st.caption(
-    f"Constant Mix maintains a fixed {cm_lambda:.0f}% allocation to risky assets at every rebalance. "
-    "There is no mechanical de-risking in a drawdown, so the strategy is simple but market-indifferent."
-)
+st.subheader("De-Risking Visual Comparison")
+left_col, right_col = st.columns(2)
 
-st.divider()
-st.subheader("Glidepath: Deterministic De-Risking")
-st.plotly_chart(
-    build_glidepath_schedule_chart(
-        initial_equity=gp_initial,
-        final_equity=gp_final,
-        time_horizon=time_horizon,
-        shape=gp_shape,
-    ),
-    width='stretch',
-)
-st.caption(
-    "The glidepath schedule is fixed at construction time. It provides a transparent de-risking rule, "
-    "but does not react to realized market stress or improvements in funding status."
-)
+with left_col:
+    st.plotly_chart(
+        build_stacked_allocation_chart(
+            sim_cm,
+            age_axis,
+            title=f"Constant Mix; Risky vs Safe ({cm_lambda:.0f}% Risky)",
+            height=350,
+        ),
+        width='stretch',
+    )
+    st.caption(
+        f"Constant Mix maintains a fixed {cm_lambda:.0f}% allocation to risky assets at every rebalance. "
+        "There is no mechanical de-risking in a drawdown, so the strategy is simple but market-indifferent."
+    )
+
+with right_col:
+    st.plotly_chart(
+        build_glidepath_schedule_chart(
+            initial_equity=gp_initial,
+            final_equity=gp_final,
+            time_horizon=time_horizon,
+            shape=gp_shape,
+            height=350,
+        ),
+        width='stretch',
+    )
+    st.caption(
+        "The glidepath schedule is fixed at construction time. It provides a transparent de-risking rule, "
+        "but does not react to realized market stress or improvements in funding status."
+    )
 
 # Replace low-value cumulative-contribution chart with a summary table
 st.divider()

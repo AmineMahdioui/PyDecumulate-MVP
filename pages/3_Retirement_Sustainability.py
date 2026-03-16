@@ -16,6 +16,7 @@ from _shared import (
     build_fan_chart,
     build_model_caveats_panel,
     build_pos_hero,
+    format_delta_metric,
     build_survival_comparison,
     build_survival_curve,
     run_simulation,
@@ -55,6 +56,7 @@ gp_final = st.sidebar.slider(
 gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=0)
 
 mkt = shared_market_sidebar(context="retirement", include_cppi=show_cppi)
+run_sims = st.sidebar.button("Run Simulation", type="primary", use_container_width=True, key="ret_run")
 
 # ---------------------------------------------------------------------------
 # Simulations
@@ -75,20 +77,29 @@ common = dict(
     block_length=mkt["block_length"],
 )
 
-sim = run_simulation(
-    lambda_pct=float(lambda_pct),
-    strategy_type="Glidepath",
-    glidepath_initial=gp_initial,
-    glidepath_final=gp_final,
-    glidepath_shape=gp_shape,
-    **common,
-)
+if ("retirement_sims" not in st.session_state) or run_sims:
+    st.session_state["retirement_sims"] = (
+        run_simulation(
+            lambda_pct=float(lambda_pct),
+            strategy_type="Glidepath",
+            glidepath_initial=gp_initial,
+            glidepath_final=gp_final,
+            glidepath_shape=gp_shape,
+            **common,
+        ),
+        run_simulation(
+            lambda_pct=float(lambda_pct),
+            strategy_type="CM",
+            **common,
+        ),
+    )
 
-sim_cm = run_simulation(
-    lambda_pct=float(lambda_pct),
-    strategy_type="CM",
-    **common,
-)
+if "retirement_sims" not in st.session_state:
+    st.title("Retirement Sustainability")
+    st.info("Configure parameters in the sidebar, then click **Run Simulation** to begin.")
+    st.stop()
+
+sim, sim_cm = st.session_state["retirement_sims"]
 
 
 def _strategy_summary(label: str, sim_data: dict) -> dict[str, float | str]:
@@ -137,10 +148,21 @@ survival_times = np.asarray(sim["survival_times"], dtype=float)
 avg_survival = float(np.mean(survival_times))
 p10_survival = float(np.percentile(survival_times, 10))
 
-k2.metric("Avg Survival Time", f"{avg_survival:.1f} yrs")
-k3.metric("10th Pctl Survival", f"{p10_survival:.1f} yrs")
-k4.metric("Expected Shortfall", f"€ {sim['expected_shortfall']:,.0f}")
-k5.metric("Median Ending Wealth", f"€ {sim['median_ending']:,.0f}")
+baseline = st.session_state.get("baseline_cm_result")
+baseline_pos = float(baseline["prob_success"]) if baseline is not None else float(sim_cm["prob_success"])
+baseline_shortfall = float(baseline["expected_shortfall"]) if baseline is not None else float(sim_cm["expected_shortfall"])
+baseline_median = float(baseline["median_ending"]) if baseline is not None else float(sim_cm["median_ending"])
+
+surv_delta = avg_survival - float(np.mean(np.asarray(sim_cm["survival_times"], dtype=float)))
+p10_delta = p10_survival - float(np.percentile(np.asarray(sim_cm["survival_times"], dtype=float), 10))
+k2.metric("Avg Survival Time", f"{avg_survival:.1f} yrs", delta=f"{surv_delta:+.1f} yrs vs CM")
+k3.metric("10th Pctl Survival", f"{p10_survival:.1f} yrs", delta=f"{p10_delta:+.1f} yrs vs CM")
+
+k4_value, k4_delta = format_delta_metric(float(sim['expected_shortfall']), baseline_shortfall, currency=True, inverse=True)
+k4.metric("Expected Shortfall", k4_value, delta=k4_delta, delta_color="inverse")
+
+k5_value, k5_delta = format_delta_metric(float(sim['median_ending']), baseline_median, currency=True)
+k5.metric("Median Ending Wealth", k5_value, delta=k5_delta)
 
 st.divider()
 

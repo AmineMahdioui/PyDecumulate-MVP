@@ -12,6 +12,7 @@ st.set_page_config(layout="wide")
 
 from _shared import (
     build_allocation_comparison_by_age,
+    format_delta_metric,
     build_glidepath_schedule_chart,
     build_model_caveats_panel,
     build_terminal_wealth_boxplot,
@@ -42,6 +43,7 @@ st.sidebar.header("Glidepath Parameters")
 gp_initial = st.sidebar.slider("Initial Equity (%)", min_value=40, max_value=100, value=80, step=5) / 100.0
 gp_final = st.sidebar.slider("Final Equity (%)", min_value=0, max_value=60, value=20, step=5) / 100.0
 gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=1)
+run_sims = st.sidebar.button("Run Strategies", type="primary", use_container_width=True, key="acc_run")
 
 common = dict(
     initial_wealth=float(initial_wealth),
@@ -59,21 +61,49 @@ common = dict(
     block_length=mkt["block_length"],
 )
 
-sim_cppi = run_simulation(strategy_type="CPPI", **common)
-sim_glide = run_simulation(
-    strategy_type="Glidepath",
-    glidepath_initial=gp_initial,
-    glidepath_final=gp_final,
-    glidepath_shape=gp_shape,
-    **common,
-)
-sim_cm = run_simulation(strategy_type="CM", **common)
+if ("acc_sims" not in st.session_state) or run_sims:
+    st.session_state["acc_sims"] = (
+        run_simulation(strategy_type="CPPI", **common),
+        run_simulation(
+            strategy_type="Glidepath",
+            glidepath_initial=gp_initial,
+            glidepath_final=gp_final,
+            glidepath_shape=gp_shape,
+            **common,
+        ),
+        run_simulation(strategy_type="CM", **common),
+    )
+
+if "acc_sims" not in st.session_state:
+    st.title("Accumulation Strategy Design")
+    st.info("Configure parameters in the sidebar, then click **Run Strategies** to begin.")
+    st.stop()
+
+sim_cppi, sim_glide, sim_cm = st.session_state["acc_sims"]
 
 st.title("Accumulation Strategy Design")
 st.caption(
     "This page only covers the saving phase. It compares how different accumulation strategies "
     "allocate risk before retirement; it does not describe retirement-income behavior."
 )
+
+baseline = st.session_state.get("baseline_cm_result")
+baseline_med = float(baseline["median_ending"]) if baseline is not None else float(np.median(sim_cm["ending_wealth"]))
+
+k1, k2, k3 = st.columns(3)
+cp_med = float(np.median(sim_cppi["ending_wealth"]))
+gp_med = float(np.median(sim_glide["ending_wealth"]))
+cm_med = float(np.median(sim_cm["ending_wealth"]))
+
+v1, d1 = format_delta_metric(cp_med, baseline_med, currency=True)
+v2, d2 = format_delta_metric(gp_med, baseline_med, currency=True)
+v3, d3 = format_delta_metric(cm_med, baseline_med, currency=True)
+
+k1.metric("CPPI Median Terminal Wealth", v1, delta=d1)
+k2.metric("Glidepath Median Terminal Wealth", v2, delta=d2)
+k3.metric("Constant Mix Median Terminal Wealth", v3, delta=d3)
+
+st.divider()
 
 st.plotly_chart(
     build_allocation_comparison_by_age(

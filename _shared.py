@@ -130,7 +130,7 @@ def run_simulation(
             )
         else:
             engine = AccConstantMixEngine(params)
-    result = engine.run(sim_returns["equity"])
+    result = engine.run(sim_returns["equity"], include_nominal_arrays=False)
 
     analyzer = MonteCarloAnalyzer(result, params)
 
@@ -691,6 +691,7 @@ def build_mountain_chart_age(
     age_axis_acc: np.ndarray,
     age_axis_dec: np.ndarray,
     include_contributions: bool = False,
+    show_inner_bands: bool = True,
 ) -> go.Figure:
     """Lifecycle mountain chart with Investor Age on the x-axis.
 
@@ -713,16 +714,17 @@ def build_mountain_chart_age(
         line=dict(width=0), fill="tonexty",
         fillcolor="rgba(0,159,227,0.08)", name="Acc P5–P95",
     ))
-    # --- Accumulation P25–P75 inner band ---
-    fig.add_trace(go.Scatter(
-        x=age_axis_acc, y=acc_pcts["P75"], mode="lines",
-        line=dict(width=0), showlegend=False, hoverinfo="skip",
-    ))
-    fig.add_trace(go.Scatter(
-        x=age_axis_acc, y=acc_pcts["P25"], mode="lines",
-        line=dict(width=0), fill="tonexty",
-        fillcolor="rgba(0,159,227,0.18)", name="Acc P25–P75",
-    ))
+    if show_inner_bands:
+        # --- Accumulation P25–P75 inner band ---
+        fig.add_trace(go.Scatter(
+            x=age_axis_acc, y=acc_pcts["P75"], mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+        fig.add_trace(go.Scatter(
+            x=age_axis_acc, y=acc_pcts["P25"], mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor="rgba(0,159,227,0.18)", name="Acc P25–P75",
+        ))
     # --- Optional contributions base layer ---
     contrib_cumsum = sim_acc.get("contribution_cumsum")
     if include_contributions and contrib_cumsum is not None:
@@ -749,16 +751,17 @@ def build_mountain_chart_age(
         line=dict(width=0), fill="tonexty",
         fillcolor="rgba(0,122,51,0.08)", name="Dec P5–P95",
     ))
-    # --- Decumulation P25–P75 inner band ---
-    fig.add_trace(go.Scatter(
-        x=age_axis_dec, y=dec_pcts["P75"], mode="lines",
-        line=dict(width=0), showlegend=False, hoverinfo="skip",
-    ))
-    fig.add_trace(go.Scatter(
-        x=age_axis_dec, y=dec_pcts["P25"], mode="lines",
-        line=dict(width=0), fill="tonexty",
-        fillcolor="rgba(0,122,51,0.18)", name="Dec P25–P75",
-    ))
+    if show_inner_bands:
+        # --- Decumulation P25–P75 inner band ---
+        fig.add_trace(go.Scatter(
+            x=age_axis_dec, y=dec_pcts["P75"], mode="lines",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+        fig.add_trace(go.Scatter(
+            x=age_axis_dec, y=dec_pcts["P25"], mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor="rgba(0,122,51,0.18)", name="Dec P25–P75",
+        ))
     # --- Decumulation median ---
     fig.add_trace(go.Scatter(
         x=age_axis_dec, y=dec_pcts["P50"], mode="lines",
@@ -943,6 +946,7 @@ def build_stacked_allocation_chart(
     sim_data: dict,
     dates,
     title: str = "Portfolio Composition — Risky vs Safe Assets",
+    height: int = 420,
 ) -> go.Figure:
     """Stacked area showing how CPPI dynamically splits the portfolio.
 
@@ -976,7 +980,7 @@ def build_stacked_allocation_chart(
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 100], ticksuffix="%"),
         template="plotly_white",
-        height=420,
+        height=height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=60, r=30, t=60, b=40),
         font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
@@ -1287,6 +1291,39 @@ def build_pos_hero(prob_success: float, label: str = "Probability of Success") -
 
 
 # ---------------------------------------------------------------------------
+# Delta Metric Formatter — baseline-relative context for st.metric()
+# ---------------------------------------------------------------------------
+def format_delta_metric(
+    value: float,
+    baseline: float,
+    currency: bool = True,
+    inverse: bool = False,
+) -> tuple[str, str]:
+    """Return (formatted_value, delta_str) for use with st.metric(..., delta=...).
+
+    Args:
+        value:    Current strategy result.
+        baseline: Reference value (e.g., Constant Mix baseline).
+        currency: If True, format value as euros (€).
+        inverse:  If True a *decrease* is better (shortfall, drawdown).
+                  Pass ``delta_color="inverse"`` to st.metric alongside this.
+
+    Returns:
+        Tuple of (main_value_str, delta_str).
+    """
+    delta_abs = value - baseline
+    delta_pct = (delta_abs / baseline * 100.0) if baseline != 0 else 0.0
+    sign = "+" if delta_abs >= 0 else ""
+    if currency:
+        value_str = f"€ {value:,.0f}"
+        delta_str = f"{sign}€ {delta_abs:,.0f} ({delta_pct:+.1f}% vs baseline)"
+    else:
+        value_str = f"{value:.1f}%"
+        delta_str = f"{delta_pct:+.1f}% vs baseline"
+    return value_str, delta_str
+
+
+# ---------------------------------------------------------------------------
 # Glidepath Deterministic Schedule Chart
 # ---------------------------------------------------------------------------
 def build_glidepath_schedule_chart(
@@ -1294,6 +1331,7 @@ def build_glidepath_schedule_chart(
     final_equity: float,
     time_horizon: int,
     shape: str = "linear",
+    height: int = 400,
 ) -> go.Figure:
     """Deterministic allocation schedule for a glidepath (no simulation needed).
 
@@ -1333,7 +1371,7 @@ def build_glidepath_schedule_chart(
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 105], ticksuffix="%"),
         template="plotly_white",
-        height=400,
+        height=height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=60, r=30, t=60, b=40),
         font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),

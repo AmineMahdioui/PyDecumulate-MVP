@@ -6,6 +6,35 @@ Entrypoint.  Run with:
 """
 
 import streamlit as st
+from _shared import run_simulation
+
+# ---------------------------------------------------------------------------
+# Session-state defaults — run once per browser session
+# ---------------------------------------------------------------------------
+def _init_session_state() -> None:
+    """Seed session state with app-wide defaults on first load."""
+    if "baseline_cm_result" not in st.session_state:
+        # Fixed 60/40 Constant Mix baseline — lightweight anchor for delta metrics.
+        # Cached by @st.cache_data; cost is paid only once across all reruns.
+        st.session_state["baseline_cm_result"] = run_simulation(
+            initial_wealth=100_000,
+            time_horizon=40,
+            cppi_multiplier=3.0,
+            floor_pct=80.0,
+            expected_return=5.0,
+            market_volatility=15.0,
+            risk_free_rate=1.0,
+            n_simulations=1_000,
+            rebalance_freq="monthly",
+            annual_withdrawal=0.0,
+            annual_contribution=12_000,
+            lambda_pct=60.0,
+            strategy_type="CM",
+        )
+
+
+_init_session_state()
+
 
 st.set_page_config(
     page_title="Retirement Solutions Research Prototype",

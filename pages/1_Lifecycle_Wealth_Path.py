@@ -12,6 +12,7 @@ st.set_page_config(layout="wide")
 from _shared import (
     build_model_caveats_panel,
     build_mountain_chart_age,
+    format_delta_metric,
     run_lifecycle_simulation,
     shared_market_sidebar,
 )
@@ -19,15 +20,14 @@ from _shared import (
 st.title("Lifecycle Wealth Path")
 st.caption("A single-page view of saving, retirement transition, and drawdown.")
 
-lifecycle_mode_label = st.radio(
+st.sidebar.title("Lifecycle Setup")
+lifecycle_mode_label = st.sidebar.radio(
     "Lifecycle Strategy Mode",
     options=["CPPI→CM", "Glidepath→Glidepath"],
-    horizontal=True,
 )
 is_cppi_to_cm = lifecycle_mode_label == "CPPI→CM"
 lifecycle_mode = "CPPI_TO_CM" if is_cppi_to_cm else "GLIDEPATH_TO_GLIDEPATH"
 
-st.sidebar.title("Lifecycle Setup")
 mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
 mkt = shared_market_sidebar(context="lifecycle", include_cppi=mkt_show_cppi)
 
@@ -125,30 +125,40 @@ with col_dec:
         )
         lc_dec_lambda = 60
 
-sim_acc, sim_dec, retirement_pot = run_lifecycle_simulation(
-    acc_initial_wealth=float(lc_acc_wealth),
-    acc_time_horizon=lc_acc_horizon,
-    acc_contribution=float(lc_acc_contribution),
-    acc_floor_pct=float(lc_acc_floor),
-    acc_cppi_multiplier=mkt["cppi_multiplier"],
-    dec_time_horizon=lc_dec_horizon,
-    dec_withdrawal=float(lc_dec_withdrawal),
-    expected_return=mkt["expected_return"],
-    market_volatility=mkt["market_volatility"],
-    risk_free_rate=mkt["risk_free_rate"],
-    n_simulations=mkt["n_simulations"],
-    rebalance_freq=mkt["rebalance_freq"],
-    simulation_method=mkt["simulation_method"],
-    block_length=mkt["block_length"],
-    Lambda=float(lc_dec_lambda),
-    lifecycle_mode=lifecycle_mode,
-    acc_glidepath_initial=float(gp_acc_initial),
-    acc_glidepath_final=float(gp_acc_final),
-    acc_glidepath_shape=gp_acc_shape,
-    dec_glidepath_initial=float(gp_dec_initial),
-    dec_glidepath_final=float(gp_dec_final),
-    dec_glidepath_shape=gp_dec_shape,
-)
+st.divider()
+if ("lc_result" not in st.session_state) or st.button("Run Lifecycle Simulation", type="primary", use_container_width=True, key="lc_run"):
+    st.session_state["lc_result"] = run_lifecycle_simulation(
+        acc_initial_wealth=float(lc_acc_wealth),
+        acc_time_horizon=lc_acc_horizon,
+        acc_contribution=float(lc_acc_contribution),
+        acc_floor_pct=float(lc_acc_floor),
+        acc_cppi_multiplier=mkt["cppi_multiplier"],
+        dec_time_horizon=lc_dec_horizon,
+        dec_withdrawal=float(lc_dec_withdrawal),
+        expected_return=mkt["expected_return"],
+        market_volatility=mkt["market_volatility"],
+        risk_free_rate=mkt["risk_free_rate"],
+        n_simulations=mkt["n_simulations"],
+        rebalance_freq=mkt["rebalance_freq"],
+        simulation_method=mkt["simulation_method"],
+        block_length=mkt["block_length"],
+        Lambda=float(lc_dec_lambda),
+        lifecycle_mode=lifecycle_mode,
+        acc_glidepath_initial=float(gp_acc_initial),
+        acc_glidepath_final=float(gp_acc_final),
+        acc_glidepath_shape=gp_acc_shape,
+        dec_glidepath_initial=float(gp_dec_initial),
+        dec_glidepath_final=float(gp_dec_final),
+        dec_glidepath_shape=gp_dec_shape,
+    )
+
+if "lc_result" not in st.session_state:
+    st.info("Configure parameters above, then click **Run Lifecycle Simulation** to begin.")
+    st.stop()
+
+show_inner_bands = st.sidebar.checkbox("Show P25–P75 bands", value=True)
+
+sim_acc, sim_dec, retirement_pot = st.session_state["lc_result"]
 
 st.divider()
 retirement_p5 = float(sim_acc.get("retirement_p5_nominal", np.percentile(sim_acc["retirement_wealths_nominal"], 5)))
@@ -174,12 +184,27 @@ if is_cppi_to_cm and retirement_risky_alloc_median >= 95.0 and (floor_touch_path
         icon="ℹ️",
     )
 
+baseline = st.session_state.get("baseline_cm_result")
+baseline_median = float(baseline["median_ending"]) if baseline is not None else retirement_pot
+baseline_p5 = float(np.percentile(baseline["ending_wealth"], 5)) if baseline is not None else retirement_p5
+baseline_pos = float(baseline["prob_success"]) if baseline is not None else float(sim_dec["prob_success"])
+baseline_shortfall = float(baseline["expected_shortfall"]) if baseline is not None else float(sim_dec["expected_shortfall"])
+
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Median Retirement Pot", f"€ {retirement_pot:,.0f}")
-k2.metric("P5 Retirement Pot", f"€ {retirement_p5:,.0f}")
-k3.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", f"{sim_dec['prob_success']:.1f} %")
-k4.metric("Expected Shortfall", f"€ {sim_dec['expected_shortfall']:,.0f}")
-k5.metric("Median Residual Wealth", f"€ {sim_dec['median_ending']:,.0f}")
+k1_value, k1_delta = format_delta_metric(retirement_pot, baseline_median, currency=True)
+k1.metric("Median Retirement Pot", k1_value, delta=k1_delta)
+
+k2_value, k2_delta = format_delta_metric(retirement_p5, baseline_p5, currency=True)
+k2.metric("P5 Retirement Pot", k2_value, delta=k2_delta)
+
+k3_value, k3_delta = format_delta_metric(float(sim_dec['prob_success']), baseline_pos, currency=False)
+k3.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", k3_value, delta=k3_delta)
+
+k4_value, k4_delta = format_delta_metric(float(sim_dec['expected_shortfall']), baseline_shortfall, currency=True, inverse=True)
+k4.metric("Expected Shortfall", k4_value, delta=k4_delta, delta_color="inverse")
+
+k5_value, k5_delta = format_delta_metric(float(sim_dec['median_ending']), baseline_median, currency=True)
+k5.metric("Median Residual Wealth", k5_value, delta=k5_delta)
 if is_cppi_to_cm:
     k6.metric("Withdrawal Rate at Retirement", f"{withdrawal_rate_pct:.1f} %")
 else:
@@ -198,7 +223,13 @@ acc_age_axis = start_age + np.arange(1, len(sim_acc["dates"]) + 1) / steps_per_y
 dec_age_axis = start_age + lc_acc_horizon + np.arange(1, len(sim_dec["dates"]) + 1) / steps_per_year
 
 st.plotly_chart(
-    build_mountain_chart_age(sim_acc, sim_dec, acc_age_axis, dec_age_axis),
+    build_mountain_chart_age(
+        sim_acc,
+        sim_dec,
+        acc_age_axis,
+        dec_age_axis,
+        show_inner_bands=show_inner_bands,
+    ),
     width='stretch',
 )
 
