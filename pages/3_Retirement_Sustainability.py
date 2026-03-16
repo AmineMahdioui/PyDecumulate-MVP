@@ -6,15 +6,14 @@ Probability of Success is the hero metric.
 """
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
 from _shared import (
     AMUNDI_GREEN,
-    AMUNDI_GREY,
     build_fan_chart,
-    build_histogram,
     build_model_caveats_panel,
     build_pos_hero,
     build_survival_comparison,
@@ -58,7 +57,7 @@ mkt = shared_market_sidebar(context="retirement", include_cppi=False)
 # ---------------------------------------------------------------------------
 # Simulations
 # ---------------------------------------------------------------------------
-sim = run_simulation(
+common = dict(
     initial_wealth=float(initial_wealth),
     time_horizon=time_horizon,
     cppi_multiplier=mkt["cppi_multiplier"],
@@ -70,33 +69,43 @@ sim = run_simulation(
     rebalance_freq=mkt["rebalance_freq"],
     annual_withdrawal=float(annual_withdrawal),
     annual_contribution=0.0,
-    lambda_pct=float(lambda_pct),
     simulation_method=mkt["simulation_method"],
     block_length=mkt["block_length"],
+)
+
+sim = run_simulation(
+    lambda_pct=float(lambda_pct),
     strategy_type="Glidepath",
     glidepath_initial=gp_initial,
     glidepath_final=gp_final,
     glidepath_shape=gp_shape,
+    **common,
 )
 
-# Constant Mix baseline for survival comparison
 sim_cm = run_simulation(
-    initial_wealth=float(initial_wealth),
-    time_horizon=time_horizon,
-    cppi_multiplier=mkt["cppi_multiplier"],
-    floor_pct=0.0,
-    expected_return=mkt["expected_return"],
-    market_volatility=mkt["market_volatility"],
-    risk_free_rate=mkt["risk_free_rate"],
-    n_simulations=mkt["n_simulations"],
-    rebalance_freq=mkt["rebalance_freq"],
-    annual_withdrawal=float(annual_withdrawal),
-    annual_contribution=0.0,
     lambda_pct=float(lambda_pct),
-    simulation_method=mkt["simulation_method"],
-    block_length=mkt["block_length"],
     strategy_type="CM",
+    **common,
 )
+
+
+def _strategy_summary(label: str, sim_data: dict) -> dict[str, float | str]:
+    survival_times = np.asarray(sim_data["survival_times"], dtype=float)
+    return {
+        "Strategy": label,
+        "PoS (%)": round(float(sim_data["prob_success"]), 1),
+        "Avg survival (yrs)": round(float(np.mean(survival_times)), 1),
+        "10th pct survival (yrs)": round(float(np.percentile(survival_times, 10)), 1),
+        "Expected shortfall (€)": round(float(sim_data["expected_shortfall"]), 0),
+        "Median ending wealth (€)": round(float(sim_data["median_ending"]), 0),
+        "P5 ending wealth (€)": round(float(np.percentile(sim_data["ending_wealth"], 5)), 0),
+    }
+
+
+comparison_df = pd.DataFrame([
+    _strategy_summary("Glidepath", sim),
+    _strategy_summary("Constant Mix", sim_cm),
+]).set_index("Strategy")
 
 # ---------------------------------------------------------------------------
 # Header
@@ -108,6 +117,12 @@ st.caption(
     f"{time_horizon}-year withdrawal horizon"
 )
 
+st.caption(
+    "Success = terminal wealth remains above the model floor at horizon. "
+    "Expected shortfall = average cumulative missed withdrawals among failing paths. "
+    "Survival = years funded before depletion or floor breach."
+)
+
 # ---------------------------------------------------------------------------
 # KPIs — PoS hero + survival-focused metrics
 # ---------------------------------------------------------------------------
@@ -116,7 +131,7 @@ hero_col, k2, k3, k4, k5 = st.columns([1.4, 1, 1, 1, 1])
 with hero_col:
     build_pos_hero(sim["prob_success"])
 
-survival_times = sim["survival_times"]
+survival_times = np.asarray(sim["survival_times"], dtype=float)
 avg_survival = float(np.mean(survival_times))
 p10_survival = float(np.percentile(survival_times, 10))
 
@@ -138,6 +153,7 @@ st.plotly_chart(
         band_color="0,122,51",
         median_color=AMUNDI_GREEN,
         median_label="Median Glidepath Portfolio",
+        show_risky_mean=False,
     ),
     width='stretch',
 )
@@ -171,8 +187,16 @@ with col_right:
         width='stretch',
     )
 
-st.plotly_chart(
-    build_histogram(sim, title="Ending Wealth Distribution — Glidepath", color=AMUNDI_GREEN),
+st.subheader("Comparison Table — Outcome Quality")
+st.dataframe(
+    comparison_df.style.format({
+        "PoS (%)": "{:.1f}",
+        "Avg survival (yrs)": "{:.1f}",
+        "10th pct survival (yrs)": "{:.1f}",
+        "Expected shortfall (€)": "€ {:,.0f}",
+        "Median ending wealth (€)": "€ {:,.0f}",
+        "P5 ending wealth (€)": "€ {:,.0f}",
+    }),
     width='stretch',
 )
 

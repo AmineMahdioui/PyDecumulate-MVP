@@ -4,6 +4,7 @@ Page 1 — Lifecycle Wealth Path
 Full lifecycle simulation: accumulation → retirement → decumulation.
 """
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -11,7 +12,6 @@ st.set_page_config(layout="wide")
 
 from _shared import (
     FREQ_TO_PD_OFFSET,
-    build_cash_flow_timeline,
     build_model_caveats_panel,
     build_mountain_chart,
     run_lifecycle_simulation,
@@ -22,9 +22,7 @@ st.sidebar.title("Lifecycle Setup")
 mkt = shared_market_sidebar(context="lifecycle", include_cppi=True)
 
 st.title("Lifecycle Wealth Path")
-st.caption(
-    "A single-page view of saving, retirement transition, and drawdown."
-)
+st.caption("A single-page view of saving, retirement transition, and drawdown.")
 
 lifecycle_mode_label = st.radio(
     "Lifecycle Strategy Mode",
@@ -154,55 +152,41 @@ sim_acc, sim_dec, retirement_pot = run_lifecycle_simulation(
 )
 
 st.divider()
-total_in = lc_acc_wealth + lc_acc_contribution * lc_acc_horizon
-withdrawal_rate = (lc_dec_withdrawal / retirement_pot * 100) if retirement_pot > 0 else 0.0
-
-k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-k1.metric(
-    "Median Retirement Pot",
-    f"€ {retirement_pot:,.0f}",
-    delta=f"{retirement_pot - total_in:+,.0f} vs contributed",
-)
-k2.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", f"{sim_dec['prob_success']:.1f} %")
-k3.metric("Median Residual Wealth", f"€ {sim_dec['median_ending']:,.0f}")
-k4.metric("Total Contributions", f"€ {total_in:,.0f}")
-k5.metric("Withdrawal Rate", f"{withdrawal_rate:.1f} %")
-if is_cppi_to_cm:
-    k6.metric("CM Risky Allocation", f"{lc_dec_lambda:.0f} %")
-else:
-    k6.metric("Dec Glidepath", f"{gp_dec_initial*100:.0f}% → {gp_dec_final*100:.0f}%")
-
+retirement_p5 = float(sim_acc.get("retirement_p5_nominal", np.percentile(sim_acc["retirement_wealths_nominal"], 5)))
+retirement_risky_alloc_median = float(sim_acc.get("retirement_risky_alloc_median", np.median(sim_acc["retirement_risky_allocation"]) * 100.0))
 floor_touch_path_pct = sim_acc.get("floor_touch_path_pct")
 floor_touch_time_pct = sim_acc.get("floor_touch_time_pct")
-if floor_touch_path_pct is None or floor_touch_time_pct is None:
-    k7.metric("CPPI Floor Contact", "N/A")
+
+st.caption(
+    "These are lifecycle risk metrics, not marketing metrics. Focus on retirement handoff quality, survival, and shortfall."
+)
+
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("Median Retirement Pot", f"€ {retirement_pot:,.0f}")
+k2.metric("P5 Retirement Pot", f"€ {retirement_p5:,.0f}")
+k3.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", f"{sim_dec['prob_success']:.1f} %")
+k4.metric("Expected Shortfall", f"€ {sim_dec['expected_shortfall']:,.0f}")
+k5.metric("Median Residual Wealth", f"€ {sim_dec['median_ending']:,.0f}")
+if is_cppi_to_cm:
+    k6.metric("Median Risky Allocation at Retirement", f"{retirement_risky_alloc_median:.1f} %")
 else:
-    k7.metric("CPPI Floor Contact", f"{floor_touch_path_pct:.1f}% paths · {floor_touch_time_pct:.1f}% time")
+    k6.metric("Retirement Glidepath", f"{gp_dec_initial*100:.0f}% → {gp_dec_final*100:.0f}%")
+
+if floor_touch_path_pct is not None and floor_touch_time_pct is not None:
+    st.caption(
+        f"Accumulation floor contact — {floor_touch_path_pct:.1f}% of paths touched the floor at least once; "
+        f"{floor_touch_time_pct:.1f}% of simulated time-steps were at or below floor."
+    )
 
 st.divider()
 
 acc_dates = sim_acc["dates"]
 freq_alias = FREQ_TO_PD_OFFSET[mkt["rebalance_freq"]]
 dec_start = acc_dates[-1] + pd.tseries.frequencies.to_offset(freq_alias)
-dec_dates = pd.date_range(
-    start=dec_start,
-    periods=len(sim_dec["dates"]),
-    freq=freq_alias,
-)
+dec_dates = pd.date_range(start=dec_start, periods=len(sim_dec["dates"]), freq=freq_alias)
 
 st.plotly_chart(
     build_mountain_chart(sim_acc, sim_dec, acc_dates, dec_dates),
-    width='stretch',
-)
-
-st.plotly_chart(
-    build_cash_flow_timeline(
-        start_age=int(start_age),
-        acc_horizon=int(lc_acc_horizon),
-        dec_horizon=int(lc_dec_horizon),
-        annual_contribution=float(lc_acc_contribution),
-        annual_withdrawal=float(lc_dec_withdrawal),
-    ),
     width='stretch',
 )
 

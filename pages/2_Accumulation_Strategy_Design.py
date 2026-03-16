@@ -4,6 +4,8 @@ Page 2 — Accumulation Strategy Design
 Compare how accumulation strategies invest before retirement.
 """
 
+import numpy as np
+import pandas as pd
 import streamlit as st
 
 st.set_page_config(layout="wide")
@@ -18,6 +20,7 @@ from _shared import (
 )
 
 st.sidebar.title("Accumulation Setup")
+
 st.sidebar.header("Portfolio & Horizon")
 start_age = st.sidebar.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
 initial_wealth = st.sidebar.number_input(
@@ -102,6 +105,41 @@ st.plotly_chart(
             "Constant Mix": sim_cm["ending_wealth"],
         }
     ),
+    width='stretch',
+)
+
+contributed_capital = float(initial_wealth + annual_contribution * time_horizon)
+
+
+def _acc_summary(label: str, sim_data: dict) -> dict[str, float | str]:
+    ending = np.asarray(sim_data["ending_wealth"], dtype=float)
+    return {
+        "Strategy": label,
+        "Median terminal wealth (€)": float(np.median(ending)),
+        "P5 terminal wealth (€)": float(np.percentile(ending, 5)),
+        "P95 terminal wealth (€)": float(np.percentile(ending, 95)),
+        "Prob below contributions (%)": float(np.mean(ending < contributed_capital) * 100.0),
+    }
+
+
+comparison_df = pd.DataFrame([
+    _acc_summary("CPPI", sim_cppi),
+    _acc_summary("Glidepath", sim_glide),
+    _acc_summary("Constant Mix", sim_cm),
+]).set_index("Strategy")
+
+st.subheader("Comparison Table — Upside and Downside")
+st.caption(
+    "This is the missing context for the box plot. A strategy is not better only because it has higher outliers; "
+    "it also needs acceptable downside and a reasonable chance of ending above contributed capital."
+)
+st.dataframe(
+    comparison_df.style.format({
+        "Median terminal wealth (€)": "€ {:,.0f}",
+        "P5 terminal wealth (€)": "€ {:,.0f}",
+        "P95 terminal wealth (€)": "€ {:,.0f}",
+        "Prob below contributions (%)": "{:.1f}",
+    }),
     width='stretch',
 )
 
