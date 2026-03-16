@@ -27,6 +27,8 @@ from _shared import (
 # ---------------------------------------------------------------------------
 st.sidebar.title("Sustainability Setup")
 
+show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
+
 st.sidebar.header("Portfolio & Horizon")
 initial_wealth = st.sidebar.number_input(
     "Initial Retirement Wealth (€)", min_value=10_000, max_value=10_000_000,
@@ -52,7 +54,7 @@ gp_final = st.sidebar.slider(
 ) / 100.0
 gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=0)
 
-mkt = shared_market_sidebar(context="retirement", include_cppi=False)
+mkt = shared_market_sidebar(context="retirement", include_cppi=show_cppi)
 
 # ---------------------------------------------------------------------------
 # Simulations

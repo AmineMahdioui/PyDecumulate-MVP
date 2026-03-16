@@ -371,14 +371,16 @@ def shared_market_sidebar(
 
     cppi_multiplier = 1.0
     if include_cppi:
-        st.sidebar.header("CPPI Strategy")
-        cppi_multiplier = st.sidebar.slider(
-            "CPPI Multiplier (m)",
-            min_value=1.0,
-            max_value=10.0,
-            value=1.0 if context == "lifecycle" else 3.0,
-            step=0.5,
-        )
+        with st.sidebar.expander("CPPI (Advanced)", expanded=False):
+            cppi_multiplier = st.number_input(
+                "CPPI Multiplier (m)",
+                min_value=1.0,
+                max_value=10.0,
+                value=1.0,
+                step=0.1,
+                format="%.2f",
+                help="Multiplier m used by CPPI: risky allocation = m × cushion.",
+            )
 
     st.sidebar.header("Market Assumptions")
 

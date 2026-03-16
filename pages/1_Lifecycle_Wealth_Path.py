@@ -28,7 +28,8 @@ is_cppi_to_cm = lifecycle_mode_label == "CPPI→CM"
 lifecycle_mode = "CPPI_TO_CM" if is_cppi_to_cm else "GLIDEPATH_TO_GLIDEPATH"
 
 st.sidebar.title("Lifecycle Setup")
-mkt = shared_market_sidebar(context="lifecycle", include_cppi=is_cppi_to_cm)
+mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
+mkt = shared_market_sidebar(context="lifecycle", include_cppi=mkt_show_cppi)
 
 with st.expander("How CPPI Works (Floor Mechanics)", expanded=False):
     st.markdown(

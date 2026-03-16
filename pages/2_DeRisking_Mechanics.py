@@ -24,6 +24,8 @@ from _shared import (
 
 st.sidebar.title("Accumulation Setup")
 
+show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
+
 st.sidebar.header("Portfolio & Horizon")
 start_age = st.sidebar.number_input("Current Age", min_value=20, max_value=60, value=25, step=1)
 initial_wealth = st.sidebar.number_input(
@@ -36,7 +38,7 @@ annual_contribution = st.sidebar.number_input(
 )
 time_horizon = st.sidebar.slider("Savings Horizon (Years)", min_value=1, max_value=40, value=40)
 
-mkt = shared_market_sidebar(context="accumulation", include_cppi=False)
+mkt = shared_market_sidebar(context="accumulation", include_cppi=show_cppi)
 
 st.sidebar.header("Constant Mix Parameters")
 cm_lambda = st.sidebar.slider(

@@ -17,7 +17,8 @@ from _shared import (
 )
 
 st.sidebar.title("Sensitivity Setup")
-mkt = shared_market_sidebar()
+mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
+mkt = shared_market_sidebar(include_cppi=mkt_show_cppi)
 
 st.title("Sensitivity & Model Risk")
 st.caption(
@@ -40,14 +41,18 @@ with c2:
         value=1_000_000, step=100_000, format="%d",
     )
 with c3:
-    lambda_pct = st.slider(
-        "CM Risky Allocation (%)",
-        min_value=20,
-        max_value=90,
-        value=60,
-        step=5,
-        help="Used when Constant Mix is selected.",
-    )
+    if strategy_type == "Constant Mix":
+        lambda_pct = st.slider(
+            "CM Risky Allocation (%)",
+            min_value=20,
+            max_value=90,
+            value=60,
+            step=5,
+            help="Used when Constant Mix is selected.",
+        )
+    else:
+        # Default value when not using Constant Mix
+        lambda_pct = 60
 
 c4, c5 = st.columns(2)
 with c4:

@@ -21,6 +21,8 @@ from _shared import (
 
 st.sidebar.title("Accumulation Setup")
 
+show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
+
 st.sidebar.header("Portfolio & Horizon")
 start_age = st.sidebar.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
 initial_wealth = st.sidebar.number_input(
@@ -34,7 +36,7 @@ annual_contribution = st.sidebar.number_input(
 time_horizon = st.sidebar.slider("Savings Horizon (Years)", min_value=1, max_value=40, value=40)
 floor_pct = st.sidebar.slider("CPPI Floor (%)", min_value=50, max_value=100, value=80, step=5)
 
-mkt = shared_market_sidebar(context="accumulation", include_cppi=True)
+mkt = shared_market_sidebar(context="accumulation", include_cppi=show_cppi)
 
 st.sidebar.header("Glidepath Parameters")
 gp_initial = st.sidebar.slider("Initial Equity (%)", min_value=40, max_value=100, value=80, step=5) / 100.0
