@@ -14,17 +14,25 @@ class AccumulationResult:
     risky_paths: np.ndarray        # shape (t_steps, n_sims); buy-and-hold risky benchmark (real)
     risky_allocation: np.ndarray   # shape (t_steps, n_sims); fraction allocated to risky asset
     contributions_made: np.ndarray # shape (t_steps, n_sims); actual contribution per step (real)
-    turnover: np.ndarray           # shape (t_steps, n_sims); absolute value of assets traded (real)
+    # turnover: np.ndarray           # shape (t_steps, n_sims); absolute value of assets traded (real)
     # Nominal (pre-deflation) outputs; used for lifecycle handoff
-    portfolio_values_nominal: np.ndarray   # shape (t_steps, n_sims); nominal portfolio value
-    floor_values_nominal: np.ndarray       # shape (t_steps,); nominal guaranteed floor
-    contributions_made_nominal: np.ndarray # shape (t_steps, n_sims); nominal contributions
-    turnover_nominal: np.ndarray           # shape (t_steps, n_sims); nominal turnover
+    portfolio_values_nominal: np.ndarray | None   # shape (t_steps, n_sims); nominal portfolio value
+    floor_values_nominal: np.ndarray | None       # shape (t_steps,); nominal guaranteed floor
+    contributions_made_nominal: np.ndarray | None # shape (t_steps, n_sims); nominal contributions
 
 
 
 @njit(parallel=True)
-def _run_cppi_accumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f, Mt_f, Xt_f, Vt_f, step_contribution, step_inflation, contributions_arr, turnover_arr):
+def _run_cppi_accumulation_core(
+    t_steps,
+    n_sims, m,
+    exprdt,
+    gross_returns,
+    Pt_f, Mt_f, Xt_f, Vt_f, 
+    step_contribution, step_inflation,
+    contributions_arr, 
+    # turnover_arr,
+    ):
     """
     Core Numba loop for a CPPI Accumulation strategy.
     Contributions grow with inflation each step.
@@ -50,8 +58,8 @@ def _run_cppi_accumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
             Mt_target = Vt_f[t+1, i] - Xt_target
             
             # 4. Turnover Tracking
-            trade_amount = Xt_target - Xt_grown
-            turnover_arr[t, i] = abs(trade_amount)
+            # trade_amount = Xt_target - Xt_grown
+            # turnover_arr[t, i] = abs(trade_amount)
 
             # 5. Lock in the new state
             Xt_f[t+1, i] = Xt_target
@@ -60,7 +68,9 @@ def _run_cppi_accumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
 
 
 @njit(parallel=True)
-def _run_cm_accumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_contribution, step_inflation, contributions_arr, turnover_arr):
+def _run_cm_accumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_contribution, step_inflation, contributions_arr, 
+                            #   turnover_arr
+                              ):
     """
     Core Numba loop for a Constant Mix Accumulation strategy.
     Contributions grow with inflation each step.
@@ -85,8 +95,8 @@ def _run_cm_accumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_
             Mt_target = Vt_f[t+1, i] - Xt_target
             
             # 4. Turnover Tracking
-            trade_amount = Xt_target - Xt_grown
-            turnover_arr[t, i] = abs(trade_amount)
+            # trade_amount = Xt_target - Xt_grown
+            # turnover_arr[t, i] = abs(trade_amount)
             
             # 5. Lock in the new state
             Xt_f[t+1, i] = Xt_target
@@ -99,7 +109,12 @@ class AccCPPIEngine:
     def __init__(self, params: StrategyParameters) -> None:
         self._params = params
         
-    def run(self, asset_log_returns: np.ndarray, riskless_returns: np.ndarray = None) -> AccumulationResult:
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray = None,
+        include_nominal_arrays: bool = True,
+    ) -> AccumulationResult:
         """Prepares the data and executes the CPPI algorithm."""
         t_steps, n_sims = asset_log_returns.shape
         
@@ -128,7 +143,7 @@ class AccCPPIEngine:
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
         contributions_arr = np.zeros((t_steps, n_sims))
-        turnover_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
 
         # 4. Set Initial Conditions at t=0
         Vt_f[0, :] = self._params.initial_wealth
@@ -141,7 +156,8 @@ class AccCPPIEngine:
         # 5. Call the fast Numba function
         _run_cppi_accumulation_core(
             t_steps, n_sims, m, exprdt, gross_returns, Pt_f, 
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, turnover_arr
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
+            # turnover_arr
         )
         
         # 6. Calculate fractional allocation
@@ -149,10 +165,10 @@ class AccCPPIEngine:
         risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
         
         # 7. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy()
-        floor_values_nominal       = Pt_f[1:].copy()
-        contributions_made_nominal = contributions_arr.copy()
-        turnover_nominal           = turnover_arr.copy()
+        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
+        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal           = turnover_arr.copy()
 
         # 8. Deflate outputs to Real terms (today's purchasing power)
         _ir = self._params.annual_inflation_rate
@@ -161,7 +177,7 @@ class AccCPPIEngine:
         floor_values_real        = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
         risky_paths_real         = deflate(risky_asset_paths, _ir, _dt, start_step=1)
         contributions_made_real  = deflate(contributions_arr, _ir, _dt, start_step=1)
-        turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1)
+        # turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1)
 
         return AccumulationResult(
             portfolio_values=portfolio_values_real,
@@ -169,11 +185,11 @@ class AccCPPIEngine:
             risky_paths=risky_paths_real,
             risky_allocation=risky_allocation[1:],
             contributions_made=contributions_made_real,
-            turnover=turnover_real,
+            # turnover=turnover_real,
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             contributions_made_nominal=contributions_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
 
 
@@ -284,7 +300,9 @@ class AccLinearGlidepath:
 
 
 @njit(parallel=True)
-def _run_glidepath_accumulation_core(t_steps, n_sims, alpha_schedule, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_contribution, step_inflation, contributions_arr, turnover_arr):
+def _run_glidepath_accumulation_core(t_steps, n_sims, alpha_schedule, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_contribution, step_inflation, contributions_arr, 
+                                    #  turnover_arr
+                                     ):
     """
     Core Numba loop for a Glidepath Accumulation strategy.
     alpha_schedule is a 1-D array of length t_steps with the equity fraction at each step.
@@ -311,8 +329,8 @@ def _run_glidepath_accumulation_core(t_steps, n_sims, alpha_schedule, exprdt, gr
             Mt_target = Vt_f[t+1, i] - Xt_target
 
             # 4. Turnover Tracking
-            trade_amount = Xt_target - Xt_grown
-            turnover_arr[t, i] = abs(trade_amount)
+            # trade_amount = Xt_target - Xt_grown
+            # turnover_arr[t, i] = abs(trade_amount)
 
             # 5. Lock in the new state
             Xt_f[t+1, i] = Xt_target
@@ -340,8 +358,12 @@ class AccGlidepathEngine:
             shape=shape,
         )
 
-    def run(self, asset_log_returns: np.ndarray,
-            riskless_returns: np.ndarray = None) -> AccumulationResult:
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray = None,
+        include_nominal_arrays: bool = True,
+    ) -> AccumulationResult:
         """Prepares data and executes the glidepath algorithm."""
         t_steps, n_sims = asset_log_returns.shape
 
@@ -385,7 +407,7 @@ class AccGlidepathEngine:
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
         contributions_arr = np.zeros((t_steps, n_sims))
-        turnover_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
 
         # 3. Set Initial Conditions at t=0
         alpha_0 = alpha_schedule[0]
@@ -396,7 +418,8 @@ class AccGlidepathEngine:
         # 4. Call the fast Numba function
         _run_glidepath_accumulation_core(
             t_steps, n_sims, alpha_schedule, exprdt, gross_returns,
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, turnover_arr,
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
+            # turnover_arr,
         )
 
         # 5. Calculate fractional allocation
@@ -405,10 +428,10 @@ class AccGlidepathEngine:
             gross_returns, axis=0)
 
         # 6. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy()
-        floor_values_nominal       = Pt_f[1:].copy()
-        contributions_made_nominal = contributions_arr.copy()
-        turnover_nominal           = turnover_arr.copy()
+        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
+        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal           = turnover_arr.copy()
 
         # 7. Deflate outputs to Real terms
         _ir = self._params.annual_inflation_rate
@@ -417,7 +440,7 @@ class AccGlidepathEngine:
         floor_values_real       = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
         risky_paths_real        = deflate(risky_asset_paths, _ir, _dt, start_step=1)
         contributions_made_real = deflate(contributions_arr, _ir, _dt, start_step=1)
-        turnover_real           = deflate(turnover_arr,      _ir, _dt, start_step=1)
+        # turnover_real           = deflate(turnover_arr,      _ir, _dt, start_step=1)
 
         return AccumulationResult(
             portfolio_values=portfolio_values_real,
@@ -425,11 +448,11 @@ class AccGlidepathEngine:
             risky_paths=risky_paths_real,
             risky_allocation=risky_allocation[1:],
             contributions_made=contributions_made_real,
-            turnover=turnover_real,
+            # turnover=turnover_real,
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             contributions_made_nominal=contributions_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
 
 
@@ -439,7 +462,13 @@ class AccConstantMixEngine:
     def __init__(self, params: StrategyParameters) -> None:
         self._params = params
         
-    def run(self, asset_log_returns: np.ndarray, riskless_returns: np.ndarray = None,deflated = False) -> AccumulationResult:
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray = None,
+        deflated: bool = False,
+        include_nominal_arrays: bool = True,
+    ) -> AccumulationResult:
         """Prepares the data and executes the Constant Mix algorithm."""
         t_steps, n_sims = asset_log_returns.shape 
         
@@ -465,7 +494,7 @@ class AccConstantMixEngine:
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
         contributions_arr = np.zeros((t_steps, n_sims))
-        turnover_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
 
         # 3. Set Initial Conditions at t=0
         Vt_f[0, :] = self._params.initial_wealth
@@ -475,7 +504,8 @@ class AccConstantMixEngine:
         # 4. Call the fast Numba function
         _run_cm_accumulation_core(
             t_steps, n_sims, alpha, exprdt, gross_returns, 
-            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, turnover_arr
+            Mt_f, Xt_f, Vt_f, C, step_inflation, contributions_arr, 
+            # turnover_arr
         )
         
         # 5. Calculate fractional allocation (avoiding divide-by-zero if wealth hits 0)
@@ -483,10 +513,10 @@ class AccConstantMixEngine:
         risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
         
         # 6. Retain nominal arrays before deflation (for lifecycle handoff)
-        portfolio_values_nominal   = Vt_f[1:].copy()
-        floor_values_nominal       = Pt_f[1:].copy()
-        contributions_made_nominal = contributions_arr.copy()
-        turnover_nominal           = turnover_arr.copy()
+        portfolio_values_nominal   = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal       = Pt_f[1:].copy() if include_nominal_arrays else None
+        contributions_made_nominal = contributions_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal           = turnover_arr.copy()
 
         # 7. Deflate outputs to Real terms (today's purchasing power)
         _ir = self._params.annual_inflation_rate
@@ -495,7 +525,7 @@ class AccConstantMixEngine:
         floor_values_real        = deflate(Pt_f[1:],          _ir, _dt, start_step=1) if deflated else Pt_f[1:]
         risky_paths_real         = deflate(risky_asset_paths, _ir, _dt, start_step=1) if deflated else risky_asset_paths
         contributions_made_real  = deflate(contributions_arr, _ir, _dt, start_step=1) if deflated else contributions_arr
-        turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
+        # turnover_real            = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
 
         return AccumulationResult(
             portfolio_values=portfolio_values_real,
@@ -503,10 +533,10 @@ class AccConstantMixEngine:
             risky_paths=risky_paths_real,
             risky_allocation=risky_allocation[1:],
             contributions_made=contributions_made_real,
-            turnover=turnover_real,
+            # turnover=turnover_real,
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             contributions_made_nominal=contributions_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
 

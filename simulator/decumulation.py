@@ -14,16 +14,17 @@ class DecumulationResult:
     risky_paths: np.ndarray       # shape (t_steps, n_sims); buy-and-hold risky benchmark (real)
     risky_allocation: np.ndarray  # shape (t_steps, n_sims); fraction allocated to risky asset
     withdrawals_made: np.ndarray  # shape (t_steps, n_sims); actual withdrawal per step (real)
-    turnover: np.ndarray          # shape (t_steps, n_sims); absolute value of assets traded (real)
+    # turnover: np.ndarray          # shape (t_steps, n_sims); absolute value of assets traded (real)
     # Nominal (pre-deflation) outputs; used for lifecycle integration and debugging
-    portfolio_values_nominal: np.ndarray  # shape (t_steps, n_sims); nominal portfolio value
-    floor_values_nominal: np.ndarray      # shape (t_steps,); nominal guaranteed floor
-    withdrawals_made_nominal: np.ndarray  # shape (t_steps, n_sims); nominal withdrawals
-    turnover_nominal: np.ndarray          # shape (t_steps, n_sims); nominal turnover
+    portfolio_values_nominal: np.ndarray | None  # shape (t_steps, n_sims); nominal portfolio value
+    floor_values_nominal: np.ndarray | None      # shape (t_steps,); nominal guaranteed floor
+    withdrawals_made_nominal: np.ndarray | None  # shape (t_steps, n_sims); nominal withdrawals
 
 
 @njit(parallel=True)
-def _run_cppi_decumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f, Mt_f, Xt_f, Vt_f, step_withdrawal, step_inflation, withdrawals_arr, turnover_arr):
+def _run_cppi_decumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f, Mt_f, Xt_f, Vt_f, step_withdrawal, step_inflation, withdrawals_arr, 
+                                # turnover_arr
+                                ):
     """
     Core Numba loop for a CPPI Decumulation strategy.
     Withdrawals grow with inflation each step.
@@ -50,8 +51,8 @@ def _run_cppi_decumulation_core(t_steps, n_sims, m, exprdt, gross_returns, Pt_f,
             Mt_target = Vt_f[t+1, i] - Xt_target
             
             # 4. Turnover Tracking
-            trade_amount = Xt_target - Xt_grown
-            turnover_arr[t, i] = abs(trade_amount)
+            # trade_amount = Xt_target - Xt_grown
+            # turnover_arr[t, i] = abs(trade_amount)
             
             # 5. Lock in the new state
             Xt_f[t+1, i] = Xt_target
@@ -63,7 +64,12 @@ class DecCPPIEngine:
     def __init__(self, params: StrategyParameters) -> None:
         self._params = params
         
-    def run(self, asset_log_returns: np.ndarray, riskless_returns: np.ndarray = None) -> DecumulationResult:
+    def run(
+        self,
+        asset_log_returns: np.ndarray,
+        riskless_returns: np.ndarray = None,
+        include_nominal_arrays: bool = True,
+    ) -> DecumulationResult:
         """Prepares the data and executes the CPPI algorithm."""
         t_steps, n_sims = asset_log_returns.shape
         
@@ -105,7 +111,7 @@ class DecCPPIEngine:
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
         withdrawals_arr = np.zeros((t_steps, n_sims))
-        turnover_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
         
         # 4. Set Initial Conditions at t=0
         Vt_f[0, :] = self._params.initial_wealth
@@ -118,7 +124,8 @@ class DecCPPIEngine:
         # 5. Call the fast Numba function
         _run_cppi_decumulation_core(
             t_steps, n_sims, m, exprdt, gross_returns, Pt_f, 
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, turnover_arr
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
+            # turnover_arr
         )
         
         # 6. Calculate fractional allocation
@@ -126,10 +133,10 @@ class DecCPPIEngine:
         risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
         
         # 7. Retain nominal arrays before deflation
-        portfolio_values_nominal = Vt_f[1:].copy()
-        floor_values_nominal     = Pt_f[1:].copy()
-        withdrawals_made_nominal = withdrawals_arr.copy()
-        turnover_nominal         = turnover_arr.copy()
+        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
+        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal         = turnover_arr.copy()
 
         # 8. Deflate outputs to Real terms (today's purchasing power)
         _ir = self._params.annual_inflation_rate
@@ -138,7 +145,7 @@ class DecCPPIEngine:
         floor_values_real     = deflate(Pt_f[1:],          _ir, _dt, start_step=1)
         risky_paths_real      = deflate(risky_asset_paths, _ir, _dt, start_step=1)
         withdrawals_made_real  = deflate(withdrawals_arr,  _ir, _dt, start_step=1)
-        turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1)
+        # turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1)
 
         return DecumulationResult(
             portfolio_values=portfolio_values_real,
@@ -146,16 +153,18 @@ class DecCPPIEngine:
             risky_paths=risky_paths_real,
             risky_allocation=risky_allocation[1:],
             withdrawals_made=withdrawals_made_real,
-            turnover=turnover_real,
+            # turnover=turnover_real,
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             withdrawals_made_nominal=withdrawals_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
 
 
 @njit(parallel=True)
-def _run_cm_decumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_withdrawal, step_inflation, withdrawals_arr, turnover_arr):
+def _run_cm_decumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_f, Xt_f, Vt_f, step_withdrawal, step_inflation, withdrawals_arr, 
+                            #   turnover_arr
+                              ):
     """
     Core Numba loop for a Constant Mix Decumulation strategy.
     Withdrawals grow with inflation each step.
@@ -181,8 +190,8 @@ def _run_cm_decumulation_core(t_steps, n_sims, alpha, exprdt, gross_returns, Mt_
             Mt_target = Vt_f[t+1, i] - Xt_target
             
             # 4. Turnover Tracking
-            trade_amount = Xt_target - Xt_grown
-            turnover_arr[t, i] = abs(trade_amount)
+            # trade_amount = Xt_target - Xt_grown
+            # turnover_arr[t, i] = abs(trade_amount)
             
             # 5. Lock in the new state
             Xt_f[t+1, i] = Xt_target
@@ -203,6 +212,7 @@ class DecConstantMixEngine:
         initial_wealths: np.ndarray | None = None,
         initial_risky_allocation: np.ndarray | None = None,
         deflated: bool = True,
+        include_nominal_arrays: bool = True,
     ) -> DecumulationResult:
         """Prepares the data and executes the Constant Mix algorithm.
 
@@ -260,7 +270,7 @@ class DecConstantMixEngine:
         Xt_f = np.zeros((t_steps + 1, n_sims))
         Vt_f = np.zeros((t_steps + 1, n_sims))
         withdrawals_arr = np.zeros((t_steps, n_sims))
-        turnover_arr = np.zeros((t_steps, n_sims))
+        # turnover_arr = np.zeros((t_steps, n_sims))
 
         # 3. Set Initial Conditions at t=0 (pathwise handoff or scalar fallback)
         if _has_iw:
@@ -277,7 +287,8 @@ class DecConstantMixEngine:
         # 4. Call the fast, multi-threaded Numba function
         _run_cm_decumulation_core(
             t_steps, n_sims, alpha, exprdt, gross_returns, 
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, turnover_arr
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
+            # turnover_arr
         )
         
         # 5. Calculate fractional allocation (avoiding divide-by-zero if wealth hits 0)
@@ -290,10 +301,9 @@ class DecConstantMixEngine:
             risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
 
         # 7. Retain nominal arrays before deflation (for lifecycle integration)
-        portfolio_values_nominal = Vt_f[1:].copy()
-        floor_values_nominal     = Pt_f[1:].copy()
-        withdrawals_made_nominal = withdrawals_arr.copy()
-        turnover_nominal         = turnover_arr.copy()
+        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
+        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
 
         # 8. Deflate outputs to Real terms (today's purchasing power)
         _ir = self._params.annual_inflation_rate
@@ -302,7 +312,7 @@ class DecConstantMixEngine:
         floor_values_real     = deflate(Pt_f[1:],          _ir, _dt, start_step=1) if deflated else Pt_f[1:]
         risky_paths_real      = deflate(risky_asset_paths, _ir, _dt, start_step=1) if deflated else risky_asset_paths
         withdrawals_made_real = deflate(withdrawals_arr,   _ir, _dt, start_step=1) if deflated else withdrawals_arr
-        turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
+        # turnover_real         = deflate(turnover_arr,      _ir, _dt, start_step=1) if deflated else turnover_arr
 
         return DecumulationResult(
             portfolio_values=portfolio_values_real,
@@ -310,11 +320,11 @@ class DecConstantMixEngine:
             risky_paths=risky_paths_real,
             risky_allocation=risky_allocation[1:],
             withdrawals_made=withdrawals_made_real,
-            turnover=turnover_real,
+            # turnover=turnover_real,
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             withdrawals_made_nominal=withdrawals_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
 
 
@@ -326,7 +336,8 @@ class DecConstantMixEngine:
 def _run_glidepath_decumulation_core(
     t_steps, n_sims, alpha_schedule, exprdt, gross_returns,
     Mt_f, Xt_f, Vt_f, step_withdrawal, step_inflation,
-    withdrawals_arr, turnover_arr,
+    withdrawals_arr, 
+    # turnover_arr,
 ):
     """
     Core Numba loop for a Glidepath Decumulation strategy.
@@ -356,7 +367,7 @@ def _run_glidepath_decumulation_core(
             Mt_target = Vt_f[t + 1, i] - Xt_target
 
             # 4. Turnover Tracking
-            turnover_arr[t, i] = abs(Xt_target - Xt_grown)
+            # turnover_arr[t, i] = abs(Xt_target - Xt_grown)
 
             # 5. Lock in new state
             Xt_f[t + 1, i] = Xt_target
@@ -430,6 +441,7 @@ class DecGlidepathEngine:
         initial_wealths: np.ndarray | None = None,
         initial_risky_allocation: np.ndarray | None = None,
         deflated: bool = True,
+        include_nominal_arrays: bool = True,
     ) -> DecumulationResult:
         """Execute the glidepath decumulation simulation.
 
@@ -488,7 +500,7 @@ class DecGlidepathEngine:
         Xt_f            = np.zeros((t_steps + 1, n_sims))
         Vt_f            = np.zeros((t_steps + 1, n_sims))
         withdrawals_arr = np.zeros((t_steps, n_sims))
-        turnover_arr    = np.zeros((t_steps, n_sims))
+        # turnover_arr    = np.zeros((t_steps, n_sims))
 
         # ---- Initial conditions (t = 0) -------------------------------------
         alpha0 = float(alpha_schedule[0])
@@ -506,7 +518,8 @@ class DecGlidepathEngine:
         # ---- Numba kernel ---------------------------------------------------
         _run_glidepath_decumulation_core(
             t_steps, n_sims, alpha_schedule, exprdt, gross_returns,
-            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, turnover_arr,
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr, 
+            # turnover_arr,
         )
 
         # ---- Fractional allocation (guard against zero wealth) ---------------
@@ -519,10 +532,10 @@ class DecGlidepathEngine:
             risky_asset_paths = self._params.initial_wealth * np.cumprod(gross_returns, axis=0)
 
         # ---- Retain nominal arrays ------------------------------------------
-        portfolio_values_nominal = Vt_f[1:].copy()
-        floor_values_nominal     = Pt_f[1:].copy()
-        withdrawals_made_nominal = withdrawals_arr.copy()
-        turnover_nominal         = turnover_arr.copy()
+        portfolio_values_nominal = Vt_f[1:].copy() if include_nominal_arrays else None
+        floor_values_nominal = Pt_f[1:].copy() if include_nominal_arrays else None
+        withdrawals_made_nominal = withdrawals_arr.copy() if include_nominal_arrays else None
+        # turnover_nominal         = turnover_arr.copy()
 
         # ---- Deflate to real terms ------------------------------------------
         _ir = self._params.annual_inflation_rate
@@ -537,9 +550,9 @@ class DecGlidepathEngine:
             risky_paths=_d(risky_asset_paths),
             risky_allocation=risky_allocation[1:],
             withdrawals_made=_d(withdrawals_arr),
-            turnover=_d(turnover_arr),
+            # turnover=_d(turnover_arr),
             portfolio_values_nominal=portfolio_values_nominal,
             floor_values_nominal=floor_values_nominal,
             withdrawals_made_nominal=withdrawals_made_nominal,
-            turnover_nominal=turnover_nominal,
+            # turnover_nominal=turnover_nominal,
         )
