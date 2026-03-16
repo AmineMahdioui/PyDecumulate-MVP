@@ -365,18 +365,18 @@ def shared_market_sidebar(
     context_defaults = {
         "accumulation": dict(expected_return=8.0, market_volatility=15.0, risk_free_rate=2.0, n_simulations=1000),
         "retirement": dict(expected_return=5.0, market_volatility=15.0, risk_free_rate=1.0, n_simulations=1000),
-        "lifecycle": dict(expected_return=8.0, market_volatility=15.0, risk_free_rate=2.0, n_simulations=1000),
+        "lifecycle": dict(expected_return=5.0, market_volatility=15.0, risk_free_rate=1.0, n_simulations=1000),
     }
     defaults = context_defaults.get(context, context_defaults["retirement"])
 
-    cppi_multiplier = 3.0
+    cppi_multiplier = 1.0
     if include_cppi:
         st.sidebar.header("CPPI Strategy")
         cppi_multiplier = st.sidebar.slider(
             "CPPI Multiplier (m)",
             min_value=1.0,
             max_value=10.0,
-            value=3.0,
+            value=1.0 if context == "lifecycle" else 3.0,
             step=0.5,
         )
 
@@ -688,6 +688,7 @@ def build_mountain_chart_age(
     sim_dec: dict,
     age_axis_acc: np.ndarray,
     age_axis_dec: np.ndarray,
+    include_contributions: bool = False,
 ) -> go.Figure:
     """Lifecycle mountain chart with Investor Age on the x-axis.
 
@@ -720,9 +721,9 @@ def build_mountain_chart_age(
         line=dict(width=0), fill="tonexty",
         fillcolor="rgba(0,159,227,0.18)", name="Acc P25–P75",
     ))
-    # --- Contributions base layer ---
+    # --- Optional contributions base layer ---
     contrib_cumsum = sim_acc.get("contribution_cumsum")
-    if contrib_cumsum is not None:
+    if include_contributions and contrib_cumsum is not None:
         fig.add_trace(go.Scatter(
             x=age_axis_acc, y=contrib_cumsum, mode="lines",
             fill="tozeroy", fillcolor="rgba(0,122,51,0.20)",
@@ -791,9 +792,9 @@ def build_mountain_chart_age(
     )
 
     fig.update_layout(
-        title="Full Lifecycle; The Wealth Mountain",
+        title="Full Lifecycle — Wealth Path",
         xaxis_title="Investor Age",
-        yaxis_title="Portfolio Value; Nominal (€)",
+        yaxis_title="Portfolio Value (€)",
         template="plotly_white",
         height=560,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),

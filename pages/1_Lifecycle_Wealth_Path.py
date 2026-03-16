@@ -5,21 +5,16 @@ Full lifecycle simulation: accumulation → retirement → decumulation.
 """
 
 import numpy as np
-import pandas as pd
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
 from _shared import (
-    FREQ_TO_PD_OFFSET,
     build_model_caveats_panel,
-    build_mountain_chart,
+    build_mountain_chart_age,
     run_lifecycle_simulation,
     shared_market_sidebar,
 )
-
-st.sidebar.title("Lifecycle Setup")
-mkt = shared_market_sidebar(context="lifecycle", include_cppi=True)
 
 st.title("Lifecycle Wealth Path")
 st.caption("A single-page view of saving, retirement transition, and drawdown.")
@@ -31,6 +26,9 @@ lifecycle_mode_label = st.radio(
 )
 is_cppi_to_cm = lifecycle_mode_label == "CPPI→CM"
 lifecycle_mode = "CPPI_TO_CM" if is_cppi_to_cm else "GLIDEPATH_TO_GLIDEPATH"
+
+st.sidebar.title("Lifecycle Setup")
+mkt = shared_market_sidebar(context="lifecycle", include_cppi=is_cppi_to_cm)
 
 with st.expander("How CPPI Works (Floor Mechanics)", expanded=False):
     st.markdown(
@@ -47,11 +45,11 @@ with col_acc:
     start_age = st.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
     lc_acc_wealth = st.number_input(
         "Starting Pot (€)", min_value=0, max_value=10_000_000,
-        value=1_000_000, step=50_000, format="%d", key="lc_acc_wealth",
+        value=5_000, step=25_000, format="%d", key="lc_acc_wealth",
     )
     lc_acc_contribution = st.number_input(
-        "Annual Contribution (€)", min_value=0, max_value=10_000_000,
-        value=50_000, step=5_000, format="%d", key="lc_acc_contrib",
+        "Annual Contribution (€)", min_value=0, max_value=1_000_000,
+        value=12_000, step=1_000, format="%d", key="lc_acc_contrib",
     )
     lc_acc_horizon = st.slider(
         "Years to Retirement", min_value=1, max_value=40,
@@ -60,7 +58,7 @@ with col_acc:
     if is_cppi_to_cm:
         lc_acc_floor = st.slider(
             "Capital Protection Floor (%)", min_value=50, max_value=100,
-            value=80, step=5, key="lc_acc_floor",
+            value=90, step=5, key="lc_acc_floor",
         )
         gp_acc_initial = 0.80
         gp_acc_final = 0.20
@@ -77,7 +75,7 @@ with col_acc:
         gp_acc_shape = st.radio(
             "Accumulation Glidepath Shape",
             options=["linear", "convex", "concave"],
-            index=0,
+            index=1,
             key="lc_gp_acc_shape",
         )
         lc_acc_floor = 80
@@ -91,7 +89,7 @@ with col_dec:
         )
     lc_dec_withdrawal = st.number_input(
         "Annual Withdrawal (€)", min_value=0, max_value=10_000_000,
-        value=40_000, step=5_000, format="%d", key="lc_dec_withdrawal",
+        value=40_000, step=2_500, format="%d", key="lc_dec_withdrawal",
     )
     lc_dec_horizon = st.slider(
         "Years in Retirement", min_value=1, max_value=40,
@@ -121,7 +119,7 @@ with col_dec:
         gp_dec_shape = st.radio(
             "Retirement Glidepath Shape",
             options=["linear", "convex", "concave"],
-            index=0,
+            index=2,
             key="lc_gp_dec_shape",
         )
         lc_dec_lambda = 60
@@ -156,10 +154,24 @@ retirement_p5 = float(sim_acc.get("retirement_p5_nominal", np.percentile(sim_acc
 retirement_risky_alloc_median = float(sim_acc.get("retirement_risky_alloc_median", np.median(sim_acc["retirement_risky_allocation"]) * 100.0))
 floor_touch_path_pct = sim_acc.get("floor_touch_path_pct")
 floor_touch_time_pct = sim_acc.get("floor_touch_time_pct")
+withdrawal_rate_pct = 0.0 if retirement_pot <= 0 else 100.0 * float(lc_dec_withdrawal) / retirement_pot
 
 st.caption(
     "These are lifecycle risk metrics, not marketing metrics. Focus on retirement handoff quality, survival, and shortfall."
 )
+
+if sim_dec['prob_success'] >= 99.0 and withdrawal_rate_pct < 2.5:
+    st.warning(
+        "Current inputs create an easy retirement regime. Probability of success is saturated and the lifecycle view becomes uninformative. "
+        "Reduce the starting pot or expected return, or raise withdrawals, to stress the model.",
+        icon="⚠️",
+    )
+
+if is_cppi_to_cm and retirement_risky_alloc_median >= 95.0 and (floor_touch_path_pct or 0.0) == 0.0:
+    st.info(
+        "Under these inputs, accumulation CPPI is behaving almost like a full-risk strategy. The floor is never binding, so the CPPI mechanics are not being stress-tested.",
+        icon="ℹ️",
+    )
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Median Retirement Pot", f"€ {retirement_pot:,.0f}")
@@ -168,7 +180,7 @@ k3.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", f"{sim_dec['prob_succe
 k4.metric("Expected Shortfall", f"€ {sim_dec['expected_shortfall']:,.0f}")
 k5.metric("Median Residual Wealth", f"€ {sim_dec['median_ending']:,.0f}")
 if is_cppi_to_cm:
-    k6.metric("Median Risky Allocation at Retirement", f"{retirement_risky_alloc_median:.1f} %")
+    k6.metric("Withdrawal Rate at Retirement", f"{withdrawal_rate_pct:.1f} %")
 else:
     k6.metric("Retirement Glidepath", f"{gp_dec_initial*100:.0f}% → {gp_dec_final*100:.0f}%")
 
@@ -180,13 +192,12 @@ if floor_touch_path_pct is not None and floor_touch_time_pct is not None:
 
 st.divider()
 
-acc_dates = sim_acc["dates"]
-freq_alias = FREQ_TO_PD_OFFSET[mkt["rebalance_freq"]]
-dec_start = acc_dates[-1] + pd.tseries.frequencies.to_offset(freq_alias)
-dec_dates = pd.date_range(start=dec_start, periods=len(sim_dec["dates"]), freq=freq_alias)
+steps_per_year = {"daily": 252, "weekly": 52, "monthly": 12, "quarterly": 4, "yearly": 1}[mkt["rebalance_freq"]]
+acc_age_axis = start_age + np.arange(1, len(sim_acc["dates"]) + 1) / steps_per_year
+dec_age_axis = start_age + lc_acc_horizon + np.arange(1, len(sim_dec["dates"]) + 1) / steps_per_year
 
 st.plotly_chart(
-    build_mountain_chart(sim_acc, sim_dec, acc_dates, dec_dates),
+    build_mountain_chart_age(sim_acc, sim_dec, acc_age_axis, dec_age_axis),
     width='stretch',
 )
 

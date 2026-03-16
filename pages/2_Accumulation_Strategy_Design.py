@@ -25,11 +25,11 @@ st.sidebar.header("Portfolio & Horizon")
 start_age = st.sidebar.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
 initial_wealth = st.sidebar.number_input(
     "Starting Pot (€)", min_value=0, max_value=10_000_000,
-    value=1_000_000, step=50_000, format="%d",
+    value=5_000, step=50_000, format="%d",
 )
 annual_contribution = st.sidebar.number_input(
-    "Annual Contribution (€)", min_value=0, max_value=10_000_000,
-    value=50_000, step=5_000, format="%d",
+    "Annual Contribution (€)", min_value=0, max_value=1_000_000,
+    value=12_000, step=5_000, format="%d",
 )
 time_horizon = st.sidebar.slider("Savings Horizon (Years)", min_value=1, max_value=40, value=40)
 floor_pct = st.sidebar.slider("CPPI Floor (%)", min_value=50, max_value=100, value=80, step=5)
@@ -39,7 +39,7 @@ mkt = shared_market_sidebar(context="accumulation", include_cppi=True)
 st.sidebar.header("Glidepath Parameters")
 gp_initial = st.sidebar.slider("Initial Equity (%)", min_value=40, max_value=100, value=80, step=5) / 100.0
 gp_final = st.sidebar.slider("Final Equity (%)", min_value=0, max_value=60, value=20, step=5) / 100.0
-gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=0)
+gp_shape = st.sidebar.radio("Glidepath Shape", options=["linear", "convex", "concave"], index=1)
 
 common = dict(
     initial_wealth=float(initial_wealth),
