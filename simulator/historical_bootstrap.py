@@ -35,8 +35,6 @@ class HistoricalBootstrapSimulator:
     - bootstraps rows with replacement, preserving cross-asset correlation
     """
 
-    _memory_cache: dict[tuple[str, str, str, str], pd.DataFrame] = {}
-
 
 
     def __init__(
@@ -46,6 +44,8 @@ class HistoricalBootstrapSimulator:
     ) -> None:
         self.params = params
         self.cache_path = Path(cache_path) if cache_path is not None else None
+        # Per-instance in-memory cache to avoid global mutable state.
+        self._memory_cache: dict[tuple[str, str, str, str], pd.DataFrame] = {}
 
 
         prices = self._get_prices()
