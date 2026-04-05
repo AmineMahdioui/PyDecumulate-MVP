@@ -11,16 +11,15 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from _shared import (
+from _shared import run_simulation
+from ui.charts import (
     AMUNDI_CYAN,
     AMUNDI_GREEN,
     AMUNDI_NAVY,
     build_glidepath_schedule_chart,
-    build_model_caveats_panel,
     build_stacked_allocation_chart,
-    run_simulation,
-    shared_market_sidebar,
 )
+from ui.components import build_model_caveats_panel, shared_market_sidebar
 
 st.sidebar.title("Accumulation Setup")
 

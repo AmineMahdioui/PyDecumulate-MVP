@@ -1,7 +1,5 @@
 """
-Page 1 — Lifecycle Wealth Path
-==============================
-Full lifecycle simulation: accumulation → retirement → decumulation.
+Page 1 — Lifecycle Wealth Path (Modernized UX)
 """
 
 import numpy as np
@@ -9,130 +7,87 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from _shared import (
+from _shared import run_lifecycle_simulation
+from ui.charts import build_mountain_chart_age
+from ui.components import (
     build_model_caveats_panel,
-    build_mountain_chart_age,
     format_delta_metric,
-    run_lifecycle_simulation,
     shared_market_sidebar,
 )
 
 st.title("Lifecycle Wealth Path")
-st.caption("A single-page view of saving, retirement transition, and drawdown.")
+st.caption("Plan your financial journey from accumulation to retirement drawdown.")
 
-st.sidebar.title("Lifecycle Setup")
-lifecycle_mode_label = st.sidebar.radio(
-    "Lifecycle Strategy Mode",
-    options=["CPPI→CM", "Glidepath→Glidepath"],
-)
-is_cppi_to_cm = lifecycle_mode_label == "CPPI→CM"
-lifecycle_mode = "CPPI_TO_CM" if is_cppi_to_cm else "GLIDEPATH_TO_GLIDEPATH"
+# ---------------------------------------------------------------------------
+# UX Improvement 1: Progressive Disclosure (Hide the Math)
+# Move the market assumptions and simulation controls entirely to the sidebar
+# ---------------------------------------------------------------------------
+st.sidebar.title("Market Assumptions")
+mkt = shared_market_sidebar(context="lifecycle", include_cppi=False)
 
-mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
-mkt = shared_market_sidebar(context="lifecycle", include_cppi=mkt_show_cppi)
-
-with st.expander("How CPPI Works (Floor Mechanics)", expanded=False):
-    st.markdown(
-        "- CPPI sets a **floor** and invests risky assets from the **cushion**: `cushion = max(wealth - floor, 0)`  \n"
-        "- Target risky allocation is `m × cushion`, capped at total wealth (no leverage).  \n"
-        "- If wealth approaches the floor, cushion shrinks and risky exposure is mechanically reduced.  \n"
-        "- In this app, that floor logic is active in **accumulation CPPI** only. Decumulation runs CM or Glidepath, so retirement floor is not an active control."
-    )
-
+# ---------------------------------------------------------------------------
+# UX Improvement 2: Clean Top-Level Inputs (Focus on the User, not the Algorithm)
+# ---------------------------------------------------------------------------
+st.subheader("Your Financial Profile")
 col_acc, col_dec = st.columns(2)
 
 with col_acc:
-    st.subheader("Accumulation Phase")
     start_age = st.number_input("Current Age", min_value=20, max_value=70, value=25, step=1)
-    lc_acc_wealth = st.number_input(
-        "Starting Pot (€)", min_value=0, max_value=10_000_000,
-        value=5_000, step=25_000, format="%d", key="lc_acc_wealth",
-    )
-    lc_acc_contribution = st.number_input(
-        "Annual Contribution (€)", min_value=0, max_value=1_000_000,
-        value=12_000, step=1_000, format="%d", key="lc_acc_contrib",
-    )
-    lc_acc_horizon = st.slider(
-        "Years to Retirement", min_value=1, max_value=40,
-        value=40, key="lc_acc_horizon",
-    )
-    if is_cppi_to_cm:
-        lc_acc_floor = st.slider(
-            "Capital Protection Floor (%)", min_value=50, max_value=100,
-            value=90, step=5, key="lc_acc_floor",
-        )
-        gp_acc_initial = 0.80
-        gp_acc_final = 0.20
-        gp_acc_shape = "linear"
-    else:
-        gp_acc_initial = st.slider(
-            "Accumulation Glidepath Initial Equity (%)", min_value=40, max_value=100,
-            value=80, step=5, key="lc_gp_acc_initial",
-        ) / 100.0
-        gp_acc_final = st.slider(
-            "Accumulation Glidepath Final Equity (%)", min_value=0, max_value=80,
-            value=20, step=5, key="lc_gp_acc_final",
-        ) / 100.0
-        gp_acc_shape = st.radio(
-            "Accumulation Glidepath Shape",
-            options=["linear", "convex", "concave"],
-            index=1,
-            key="lc_gp_acc_shape",
-        )
-        lc_acc_floor = 80
+    lc_acc_horizon = st.slider("Years until Retirement", min_value=1, max_value=40, value=40)
+    lc_acc_wealth = st.number_input("Current Savings (€)", min_value=0, value=5_000, step=5_000)
+    lc_acc_contribution = st.number_input("Annual Contribution (€)", min_value=0, value=12_000, step=1_000)
 
 with col_dec:
-    st.subheader("Retirement Phase")
-    with st.expander("Lifecycle Handoff", expanded=False):
-        st.markdown(
-            "Each simulated accumulation path feeds its own retirement starting wealth. "
-            "This keeps the lifecycle transition pathwise rather than using a single pooled retirement pot."
-        )
-    lc_dec_withdrawal = st.number_input(
-        "Annual Withdrawal (€)", min_value=0, max_value=10_000_000,
-        value=40_000, step=2_500, format="%d", key="lc_dec_withdrawal",
+    lc_dec_horizon = st.slider("Expected Years in Retirement", min_value=1, max_value=40, value=30)
+    # UX Shift: Ask for desired MONTHLY income, convert to annual in backend
+    monthly_withdrawal = st.number_input("Target Monthly Retirement Income (€)", min_value=0, value=3_333, step=100)
+    lc_dec_withdrawal = monthly_withdrawal * 12
+
+# ---------------------------------------------------------------------------
+# UX Improvement 3: Advanced Strategy Settings (Hidden by default)
+# Group CPPI vs Glidepath into simple "Risk Profiles"
+# ---------------------------------------------------------------------------
+with st.expander("⚙️ Advanced Strategy & Risk Settings"):
+    st.write("Customize how the algorithm protects your capital.")
+
+    lifecycle_mode_label = st.radio(
+        "Backend Strategy Model",
+        options=["Dynamic Protection (CPPI → Constant Mix)", "Pre-set Lifecycle (Glidepath → Glidepath)"],
+        horizontal=True,
     )
-    lc_dec_horizon = st.slider(
-        "Years in Retirement", min_value=1, max_value=40,
-        value=30, key="lc_dec_horizon",
-    )
+    is_cppi_to_cm = "CPPI" in lifecycle_mode_label
+    lifecycle_mode = "CPPI_TO_CM" if is_cppi_to_cm else "GLIDEPATH_TO_GLIDEPATH"
+
     if is_cppi_to_cm:
-        lc_dec_lambda = st.slider(
-            "Retirement % Invested in Risky Assets (CM)",
-            min_value=20,
-            max_value=90,
-            value=60,
-            step=5,
-            key="lc_dec_lambda",
-        )
-        gp_dec_initial = 0.60
-        gp_dec_final = 0.30
-        gp_dec_shape = "linear"
+        lc_acc_floor = st.slider("Capital Protection Floor (%)", min_value=50, max_value=100, value=90, step=5)
+        lc_dec_lambda = st.slider("Retirement Equity Allocation (%)", min_value=20, max_value=90, value=60, step=5)
+        mkt_cppi_multiplier = st.slider("CPPI Multiplier (m)", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
+
+        # Default unused parameters
+        gp_acc_initial, gp_acc_final, gp_dec_initial, gp_dec_final = 0.8, 0.2, 0.6, 0.3
+        gp_acc_shape = gp_dec_shape = "linear"
     else:
-        gp_dec_initial = st.slider(
-            "Retirement Glidepath Initial Equity (%)", min_value=20, max_value=90,
-            value=60, step=5, key="lc_gp_dec_initial",
-        ) / 100.0
-        gp_dec_final = st.slider(
-            "Retirement Glidepath Final Equity (%)", min_value=0, max_value=80,
-            value=30, step=5, key="lc_gp_dec_final",
-        ) / 100.0
-        gp_dec_shape = st.radio(
-            "Retirement Glidepath Shape",
-            options=["linear", "convex", "concave"],
-            index=2,
-            key="lc_gp_dec_shape",
-        )
-        lc_dec_lambda = 60
+        # Simplified Glidepath UI
+        gp_acc_initial = st.slider("Initial Equity Allocation (%)", min_value=40, max_value=100, value=80) / 100.0
+        gp_dec_final = st.slider("Final Retirement Equity Allocation (%)", min_value=0, max_value=80, value=30) / 100.0
+        gp_acc_shape = st.selectbox("Glidepath Shape", options=["linear", "convex", "concave"])
+
+        # Default unused parameters
+        lc_acc_floor, lc_dec_lambda, mkt_cppi_multiplier = 80, 60, 1.0
+        gp_acc_final, gp_dec_initial, gp_dec_shape = gp_dec_final, gp_dec_final, gp_acc_shape
 
 st.divider()
-if ("lc_result" not in st.session_state) or st.button("Run Lifecycle Simulation", type="primary", use_container_width=True, key="lc_run"):
+
+# ---------------------------------------------------------------------------
+# Run Simulation
+# ---------------------------------------------------------------------------
+if st.button("Calculate Retirement Trajectory", type="primary", use_container_width=True):
     st.session_state["lc_result"] = run_lifecycle_simulation(
         acc_initial_wealth=float(lc_acc_wealth),
         acc_time_horizon=lc_acc_horizon,
         acc_contribution=float(lc_acc_contribution),
         acc_floor_pct=float(lc_acc_floor),
-        acc_cppi_multiplier=mkt["cppi_multiplier"],
+        acc_cppi_multiplier=mkt_cppi_multiplier,
         dec_time_horizon=lc_dec_horizon,
         dec_withdrawal=float(lc_dec_withdrawal),
         expected_return=mkt["expected_return"],
@@ -153,71 +108,28 @@ if ("lc_result" not in st.session_state) or st.button("Run Lifecycle Simulation"
     )
 
 if "lc_result" not in st.session_state:
-    st.info("Configure parameters above, then click **Run Lifecycle Simulation** to begin.")
+    st.info("Adjust your parameters and click calculate to view your wealth path.")
     st.stop()
-
-show_inner_bands = st.sidebar.checkbox("Show P25–P75 bands", value=True)
 
 sim_acc, sim_dec, retirement_pot = st.session_state["lc_result"]
 
-st.divider()
-retirement_p5 = float(sim_acc.get("retirement_p5_nominal", np.percentile(sim_acc["retirement_wealths_nominal"], 5)))
-retirement_risky_alloc_median = float(sim_acc.get("retirement_risky_alloc_median", np.median(sim_acc["retirement_risky_allocation"]) * 100.0))
-floor_touch_path_pct = sim_acc.get("floor_touch_path_pct")
-floor_touch_time_pct = sim_acc.get("floor_touch_time_pct")
-withdrawal_rate_pct = 0.0 if retirement_pot <= 0 else 100.0 * float(lc_dec_withdrawal) / retirement_pot
+# ---------------------------------------------------------------------------
+# UX Improvement 4: Focus on the "So What?" Metrics
+# ---------------------------------------------------------------------------
+st.subheader("Your Retirement Outlook")
 
-st.caption(
-    "These are lifecycle risk metrics, not marketing metrics. Focus on retirement handoff quality, survival, and shortfall."
-)
-
-if sim_dec['prob_success'] >= 99.0 and withdrawal_rate_pct < 2.5:
-    st.warning(
-        "Current inputs create an easy retirement regime. Probability of success is saturated and the lifecycle view becomes uninformative. "
-        "Reduce the starting pot or expected return, or raise withdrawals, to stress the model.",
-        icon="⚠️",
-    )
-
-if is_cppi_to_cm and retirement_risky_alloc_median >= 95.0 and (floor_touch_path_pct or 0.0) == 0.0:
-    st.info(
-        "Under these inputs, accumulation CPPI is behaving almost like a full-risk strategy. The floor is never binding, so the CPPI mechanics are not being stress-tested.",
-        icon="ℹ️",
-    )
-
-baseline = st.session_state.get("baseline_cm_result")
-baseline_median = float(baseline["median_ending"]) if baseline is not None else retirement_pot
-baseline_p5 = float(np.percentile(baseline["ending_wealth"], 5)) if baseline is not None else retirement_p5
-baseline_pos = float(baseline["prob_success"]) if baseline is not None else float(sim_dec["prob_success"])
-baseline_shortfall = float(baseline["expected_shortfall"]) if baseline is not None else float(sim_dec["expected_shortfall"])
-
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1_value, k1_delta = format_delta_metric(retirement_pot, baseline_median, currency=True)
-k1.metric("Median Retirement Pot", k1_value, delta=k1_delta)
-
-k2_value, k2_delta = format_delta_metric(retirement_p5, baseline_p5, currency=True)
-k2.metric("P5 Retirement Pot", k2_value, delta=k2_delta)
-
-k3_value, k3_delta = format_delta_metric(float(sim_dec['prob_success']), baseline_pos, currency=False)
-k3.metric(f"Full-Lifecycle PoS ({lifecycle_mode_label})", k3_value, delta=k3_delta)
-
-k4_value, k4_delta = format_delta_metric(float(sim_dec['expected_shortfall']), baseline_shortfall, currency=True, inverse=True)
-k4.metric("Expected Shortfall", k4_value, delta=k4_delta, delta_color="inverse")
-
-k5_value, k5_delta = format_delta_metric(float(sim_dec['median_ending']), baseline_median, currency=True)
-k5.metric("Median Residual Wealth", k5_value, delta=k5_delta)
-if is_cppi_to_cm:
-    k6.metric("Withdrawal Rate at Retirement", f"{withdrawal_rate_pct:.1f} %")
-else:
-    k6.metric("Retirement Glidepath", f"{gp_dec_initial*100:.0f}% → {gp_dec_final*100:.0f}%")
-
-if floor_touch_path_pct is not None and floor_touch_time_pct is not None:
-    st.caption(
-        f"Accumulation floor contact — {floor_touch_path_pct:.1f}% of paths touched the floor at least once; "
-        f"{floor_touch_time_pct:.1f}% of simulated time-steps were at or below floor."
-    )
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Median Retirement Pot", f"€ {retirement_pot:,.0f}")
+k2.metric("Probability of Success", f"{float(sim_dec['prob_success']):.1f} %")
+# Translate Expected Shortfall into terms they understand (Years of Income Lost)
+shortfall_euros = float(sim_dec['expected_shortfall'])
+months_lost = (shortfall_euros / monthly_withdrawal) if monthly_withdrawal > 0 else 0
+k3.metric("Expected Shortfall", f"€ {shortfall_euros:,.0f}", delta=f"-{months_lost:.1f} months income", delta_color="inverse")
+k4.metric("Median Residual Wealth (End of Life)", f"€ {float(sim_dec['median_ending']):,.0f}")
 
 st.divider()
 
+# Display the main simplified chart
 steps_per_year = {"daily": 252, "weekly": 52, "monthly": 12, "quarterly": 4, "yearly": 1}[mkt["rebalance_freq"]]
 acc_age_axis = start_age + np.arange(1, len(sim_acc["dates"]) + 1) / steps_per_year
 dec_age_axis = start_age + lc_acc_horizon + np.arange(1, len(sim_dec["dates"]) + 1) / steps_per_year
@@ -228,17 +140,9 @@ st.plotly_chart(
         sim_dec,
         acc_age_axis,
         dec_age_axis,
-        show_inner_bands=show_inner_bands,
+        show_inner_bands=False,  # Hidden by default to reduce visual noise
     ),
     width='stretch',
-)
-
-st.caption(
-    f"Assumptions — {mkt['n_simulations']:,} Monte-Carlo paths · "
-    f"Expected return {mkt['expected_return']:.1f} % · "
-    f"Volatility {mkt['market_volatility']:.1f} % · "
-    f"Risk-free rate {mkt['risk_free_rate']:.1f} % · "
-    f"Rebalanced {mkt['rebalance_freq']} · Displayed values are nominal (€)"
 )
 
 build_model_caveats_panel()

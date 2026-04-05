@@ -9,12 +9,9 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from _shared import (
-    build_model_caveats_panel,
-    build_sensitivity_heatmap,
-    run_sensitivity_sweep,
-    shared_market_sidebar,
-)
+from _shared import run_sensitivity_sweep
+from ui.charts import build_sensitivity_heatmap
+from ui.components import build_model_caveats_panel, shared_market_sidebar
 
 st.sidebar.title("Sensitivity Setup")
 mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)

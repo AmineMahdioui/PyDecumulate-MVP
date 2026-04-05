@@ -10,13 +10,15 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from _shared import (
+from _shared import run_simulation
+from ui.charts import (
     build_allocation_comparison_by_age,
-    format_delta_metric,
     build_glidepath_schedule_chart,
-    build_model_caveats_panel,
     build_terminal_wealth_boxplot,
-    run_simulation,
+)
+from ui.components import (
+    build_model_caveats_panel,
+    format_delta_metric,
     shared_market_sidebar,
 )
 

@@ -11,15 +11,17 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from _shared import (
+from _shared import run_simulation
+from ui.charts import (
     AMUNDI_GREEN,
     build_fan_chart,
+    build_survival_comparison,
+    build_survival_curve,
+)
+from ui.components import (
     build_model_caveats_panel,
     build_pos_hero,
     format_delta_metric,
-    build_survival_comparison,
-    build_survival_curve,
-    run_simulation,
     shared_market_sidebar,
 )
 
