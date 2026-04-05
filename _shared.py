@@ -49,7 +49,7 @@ def run_simulation(
     annual_contribution: float,
     lambda_pct: float = 60.0,
     simulation_method: str = "GBM (Parametric)",
-    block_length: int = 1,
+    block_size: int = 1,
     strategy_type: str = "CPPI",
     glidepath_initial: float = 0.80,
     glidepath_final: float = 0.20,
@@ -86,7 +86,7 @@ def run_simulation(
     else:
         sim_returns = HistoricalBootstrapSimulator(p).generate_returns(
             seed=42,
-            block_size=block_length,
+            block_size=block_size,
         )
 
     if params.is_decumulation:
@@ -134,7 +134,10 @@ def run_simulation(
 
     return {
         "prob_success": analyzer.probability_of_success(),
+        "prob_success_terminal": analyzer.terminal_floor_probability_of_success(),
+        "prob_success_income": analyzer.income_probability_of_success(),
         "expected_shortfall": analyzer.expected_shortfall(),
+        "tail_es_terminal": analyzer.terminal_tail_expected_shortfall(),
         "median_ending": analyzer.median_ending_wealth(),
         "median_mdd": analyzer.median_max_drawdown(),
         "percentiles": analyzer.percentile_paths(),
@@ -170,7 +173,7 @@ def run_lifecycle_simulation(
     n_simulations: int = 1000,
     rebalance_freq: str = "monthly",
     simulation_method: str = "GBM (Parametric)",
-    block_length: int = 1,
+    block_size: int = 1,
     annual_inflation_rate: float = 0.0,
     Lambda: float = 60.0,
     lifecycle_mode: str = "CPPI_TO_CM",
@@ -225,13 +228,13 @@ def run_lifecycle_simulation(
             n_steps=acc_params.n_steps,
             n_simulations=n_simulations,
             seed=42,
-            block_size=block_length,
+            block_size=block_size,
         )["equity"]
         dec_returns = bootstrap.generate_returns(
             n_steps=dec_params.n_steps,
             n_simulations=n_simulations,
             seed=123,
-            block_size=block_length,
+            block_size=block_size,
         )["equity"]
     else:
         acc_returns = MarketSimulator(acc_params).generate_returns(seed=42)
@@ -277,7 +280,10 @@ def run_lifecycle_simulation(
 
     sim_acc = {
         "prob_success": acc_analyzer.probability_of_success(),
+        "prob_success_terminal": acc_analyzer.terminal_floor_probability_of_success(),
+        "prob_success_income": acc_analyzer.income_probability_of_success(),
         "expected_shortfall": acc_analyzer.expected_shortfall(),
+        "tail_es_terminal": acc_analyzer.terminal_tail_expected_shortfall(),
         "median_ending": acc_analyzer.median_ending_wealth(),
         "median_mdd": acc_analyzer.median_max_drawdown(),
         "percentiles": acc_analyzer.percentile_paths(),
@@ -301,7 +307,10 @@ def run_lifecycle_simulation(
 
     sim_dec = {
         "prob_success": dec_analyzer.probability_of_success(),
+        "prob_success_terminal": dec_analyzer.terminal_floor_probability_of_success(),
+        "prob_success_income": dec_analyzer.income_probability_of_success(),
         "expected_shortfall": dec_analyzer.expected_shortfall(),
+        "tail_es_terminal": dec_analyzer.terminal_tail_expected_shortfall(),
         "median_ending": dec_analyzer.median_ending_wealth(),
         "median_mdd": dec_analyzer.median_max_drawdown(),
         "percentiles": dec_analyzer.percentile_paths(),
@@ -336,7 +345,7 @@ def run_sensitivity_sweep(
     risk_free_rate: float,
     rebalance_freq: str,
     simulation_method: str = "GBM (Parametric)",
-    block_length: int = 1,
+    block_size: int = 1,
     strategy_type: str = "Glidepath",
     glidepath_initial: float = 0.60,
     glidepath_final: float = 0.30,
@@ -363,7 +372,7 @@ def run_sensitivity_sweep(
                 annual_contribution=0.0,
                 lambda_pct=lambda_pct,
                 simulation_method=simulation_method,
-                block_length=block_length,
+                block_size=block_size,
                 strategy_type=strategy_type,
                 glidepath_initial=glidepath_initial,
                 glidepath_final=glidepath_final,

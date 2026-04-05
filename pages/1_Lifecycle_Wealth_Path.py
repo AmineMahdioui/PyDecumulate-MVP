@@ -96,7 +96,7 @@ if st.button("Calculate Retirement Trajectory", type="primary", use_container_wi
         n_simulations=mkt["n_simulations"],
         rebalance_freq=mkt["rebalance_freq"],
         simulation_method=mkt["simulation_method"],
-        block_length=mkt["block_length"],
+        block_size=mkt["block_size"],
         Lambda=float(lc_dec_lambda),
         lifecycle_mode=lifecycle_mode,
         acc_glidepath_initial=float(gp_acc_initial),
@@ -118,14 +118,13 @@ sim_acc, sim_dec, retirement_pot = st.session_state["lc_result"]
 # ---------------------------------------------------------------------------
 st.subheader("Your Retirement Outlook")
 
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Median Retirement Pot", f"€ {retirement_pot:,.0f}")
-k2.metric("Probability of Success", f"{float(sim_dec['prob_success']):.1f} %")
-# Translate Expected Shortfall into terms they understand (Years of Income Lost)
-shortfall_euros = float(sim_dec['expected_shortfall'])
-months_lost = (shortfall_euros / monthly_withdrawal) if monthly_withdrawal > 0 else 0
-k3.metric("Expected Shortfall", f"€ {shortfall_euros:,.0f}", delta=f"-{months_lost:.1f} months income", delta_color="inverse")
-k4.metric("Median Residual Wealth (End of Life)", f"€ {float(sim_dec['median_ending']):,.0f}")
+k2.metric("Terminal PoS (Floor)", f"{float(sim_dec['prob_success_terminal']):.1f} %")
+k3.metric("Income PoS (No Shortfall)", f"{float(sim_dec['prob_success_income']):.1f} %")
+tail_es_terminal = float(sim_dec["tail_es_terminal"])
+k4.metric("Tail ES (Worst 5% Terminal Wealth)", f"€ {tail_es_terminal:,.0f}")
+k5.metric("Median Residual Wealth (End of Life)", f"€ {float(sim_dec['median_ending']):,.0f}")
 
 st.divider()
 

@@ -80,10 +80,10 @@ def shared_market_sidebar(
             icon=None,
         )
 
-    block_length = 1
+    block_size = 1
     if simulation_method == "Historical Bootstrap":
-        block_length = st.sidebar.slider(
-            "Block Length (Bootstrap)",
+        block_size = st.sidebar.slider(
+            "Block Size (Bootstrap)",
             min_value=1,
             max_value=24,
             value=1,
@@ -115,7 +115,7 @@ def shared_market_sidebar(
         n_simulations=n_simulations,
         rebalance_freq=rebalance_freq,
         simulation_method=simulation_method,
-        block_length=block_length,
+        block_size=block_size,
     )
 
 

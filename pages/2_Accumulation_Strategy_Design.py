@@ -60,7 +60,7 @@ common = dict(
     annual_withdrawal=0.0,
     annual_contribution=float(annual_contribution),
     simulation_method=mkt["simulation_method"],
-    block_length=mkt["block_length"],
+    block_size=mkt["block_size"],
 )
 
 if ("acc_sims" not in st.session_state) or run_sims:

@@ -74,7 +74,7 @@ _sim_kw = dict(
     annual_contribution=float(annual_contribution),
     lambda_pct=float(cm_lambda),
     simulation_method=mkt["simulation_method"],
-    block_length=mkt["block_length"],
+    block_size=mkt["block_size"],
 )
 
 if ("derisking_sims" not in st.session_state) or run_sims:

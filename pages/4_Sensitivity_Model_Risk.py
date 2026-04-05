@@ -92,7 +92,7 @@ else:
                 risk_free_rate=mkt["risk_free_rate"],
                 rebalance_freq=mkt["rebalance_freq"],
                 simulation_method=mkt["simulation_method"],
-                block_length=mkt["block_length"],
+                block_size=mkt["block_size"],
                 strategy_type=_strat,
                 n_sims_sweep=mkt["n_simulations"],
             )

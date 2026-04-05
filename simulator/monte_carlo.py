@@ -29,11 +29,55 @@ class MonteCarloAnalyzer:
 
     # -- scalar KPIs ---------------------------------------------------------
 
-    def probability_of_success(self) -> float:
-        """Percentage of paths whose final value exceeds the floor."""
+    def terminal_floor_probability_of_success(self) -> float:
+        """Percentage of paths whose terminal value exceeds terminal floor."""
         final_vals = self._result.portfolio_values[-1, :]
         final_floor = self._result.floor_values[-1]
         return float(np.mean(final_vals > final_floor) * 100.0)
+
+    def income_probability_of_success(self) -> float:
+        """Percentage of paths with no withdrawal shortfall across the horizon.
+
+        For decumulation outputs this checks whether each path met the intended
+        real withdrawal at every step. For accumulation outputs, where no
+        withdrawals are defined, this falls back to terminal floor success.
+        """
+        if not hasattr(self._result, "withdrawals_made"):
+            return self.terminal_floor_probability_of_success()
+
+        step_g = self._params.step_inflation
+        intended_real = self._params.step_withdrawal / (1.0 + step_g)
+        shortfall_per_step = np.maximum(
+            intended_real - self._result.withdrawals_made, 0.0
+        )
+        path_has_shortfall = np.any(shortfall_per_step > 0.0, axis=0)
+        return float(np.mean(~path_has_shortfall) * 100.0)
+
+    def terminal_tail_expected_shortfall(self, tail_alpha: float = 0.05) -> float:
+        """Lower-tail mean (CVaR-style) of terminal wealth.
+
+        Parameters
+        ----------
+        tail_alpha : float, default 0.05
+            Left-tail probability mass. ``0.05`` means worst 5% of terminal
+            wealth outcomes.
+        """
+        if not (0.0 < tail_alpha <= 1.0):
+            raise ValueError("tail_alpha must be in (0, 1].")
+
+        final_vals = self._result.portfolio_values[-1, :]
+        if final_vals.size == 0:
+            return 0.0
+
+        cutoff = float(np.quantile(final_vals, tail_alpha))
+        tail_vals = final_vals[final_vals <= cutoff]
+        if tail_vals.size == 0:
+            return cutoff
+        return float(np.mean(tail_vals))
+
+    def probability_of_success(self) -> float:
+        """Percentage of paths whose final value exceeds the floor."""
+        return self.terminal_floor_probability_of_success()
 
     def expected_shortfall(self) -> float:
         """Average magnitude of failure across paths that experienced shortfall.
