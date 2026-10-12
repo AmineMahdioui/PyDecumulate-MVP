@@ -494,6 +494,16 @@ def _run_glidepath_decumulation_core(
             Mt_f[t + 1, i] = Mt_target
 
 
+def _equity_from_age_in_bonds(
+    age: float,
+    min_bond_weight: float = 0.18,
+    max_bond_weight: float = 1.0,
+) -> float:
+    """Return equity weight implied by age-in-bonds with clipped bond weights."""
+    bond_weight = float(np.clip(age / 100.0, min_bond_weight, max_bond_weight))
+    return 1.0 - bond_weight
+
+
 class DecGlidepathEngine(BaseDecumulationEngine):
     """Run a time-varying Glidepath strategy during decumulation.
 
@@ -596,6 +606,91 @@ class DecGlidepathEngine(BaseDecumulationEngine):
         W = self._params.step_withdrawal
         step_inflation = self._params.step_inflation
         
+        _run_glidepath_decumulation_core(
+            t_steps, n_sims, self._alpha_schedule, exprdt, gross_returns,
+            Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr,
+        )
+
+
+class DecAgeInBondsEngine(BaseDecumulationEngine):
+    """Run an age-in-bonds strategy during decumulation."""
+
+    def __init__(
+        self,
+        params: StrategyParameters,
+        starting_age: int = 64,
+        min_bond_weight: float = 0.18,
+        max_bond_weight: float = 1.0,
+    ) -> None:
+        super().__init__(params)
+        if not (0.0 <= min_bond_weight <= max_bond_weight <= 1.0):
+            raise ValueError("Require 0.0 <= min_bond_weight <= max_bond_weight <= 1.0")
+        self._starting_age = int(starting_age)
+        self._min_bond_weight = float(min_bond_weight)
+        self._max_bond_weight = float(max_bond_weight)
+
+    def _build_alpha_schedule(self, t_steps: int) -> np.ndarray:
+        """Return a ``(t_steps,)`` array of per-step risky fractions from age-in-bonds."""
+        dt = 1.0 / self._params.steps_per_year
+        alpha_schedule = np.empty(t_steps, dtype=np.float64)
+        for t in range(t_steps):
+            age = self._starting_age + (t * dt)
+            alpha_schedule[t] = _equity_from_age_in_bonds(
+                age,
+                min_bond_weight=self._min_bond_weight,
+                max_bond_weight=self._max_bond_weight,
+            )
+        return np.clip(alpha_schedule, 0.0, 1.0)
+
+    def _calculate_floor(self, t_steps: int) -> np.ndarray:
+        """Age-in-bonds has no floor; return zeros."""
+        return np.zeros(t_steps + 1)
+
+    def _initialize_state(
+        self,
+        t_steps: int,
+        n_sims: int,
+        Pt_f: np.ndarray,
+        initial_wealths: np.ndarray | None,
+        initial_risky_allocation: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Initialize age-in-bonds state with schedule-implied initial equity allocation."""
+        Mt_f = np.zeros((t_steps + 1, n_sims))
+        Xt_f = np.zeros((t_steps + 1, n_sims))
+        Vt_f = np.zeros((t_steps + 1, n_sims))
+
+        self._alpha_schedule = self._build_alpha_schedule(t_steps)
+        alpha0 = float(self._alpha_schedule[0])
+
+        _has_iw = initial_wealths is not None
+        if _has_iw:
+            Vt_f[0, :] = initial_wealths
+            Xt_f[0, :] = initial_wealths * alpha0
+            Mt_f[0, :] = initial_wealths - Xt_f[0, :]
+        else:
+            W0 = self._params.initial_wealth
+            Vt_f[0, :] = W0
+            Xt_f[0, :] = alpha0 * W0
+            Mt_f[0, :] = W0 - Xt_f[0, :]
+
+        return Mt_f, Xt_f, Vt_f
+
+    def _call_core_function(
+        self,
+        t_steps: int,
+        n_sims: int,
+        exprdt: np.ndarray,
+        gross_returns: np.ndarray,
+        Pt_f: np.ndarray,
+        Mt_f: np.ndarray,
+        Xt_f: np.ndarray,
+        Vt_f: np.ndarray,
+        withdrawals_arr: np.ndarray,
+    ) -> None:
+        """Execute the age-in-bonds core loop with time-varying alpha."""
+        W = self._params.step_withdrawal
+        step_inflation = self._params.step_inflation
+
         _run_glidepath_decumulation_core(
             t_steps, n_sims, self._alpha_schedule, exprdt, gross_returns,
             Mt_f, Xt_f, Vt_f, W, step_inflation, withdrawals_arr,

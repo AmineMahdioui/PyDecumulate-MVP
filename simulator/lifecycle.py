@@ -5,12 +5,14 @@ from dataclasses import dataclass
 
 from .accumulation import (
     AccumulationResult,
+    AccAgeInBondsEngine,
     AccCPPIEngine,
     AccGlidepathEngine,
     AccConstantMixEngine,
 )
 from .decumulation import (
     DecumulationResult,
+    DecAgeInBondsEngine,
     DecConstantMixEngine,
     DecGlidepathEngine,
 )
@@ -48,6 +50,8 @@ class LifecycleSimulator:
         dec_glidepath_initial: float = 0.60,
         dec_glidepath_final: float = 0.30,
         dec_glidepath_shape: str = "linear",
+        acc_start_age: int = 25,
+        dec_start_age: int = 64,
     ) -> None:
         self._acc_params = acc_params
         self._dec_params = dec_params
@@ -58,10 +62,17 @@ class LifecycleSimulator:
         self._dec_glidepath_initial = dec_glidepath_initial
         self._dec_glidepath_final = dec_glidepath_final
         self._dec_glidepath_shape = dec_glidepath_shape
+        self._acc_start_age = int(acc_start_age)
+        self._dec_start_age = int(dec_start_age)
 
-        if self._lifecycle_mode not in {"CPPI_TO_CM", "GLIDEPATH_TO_GLIDEPATH"}:
+        if self._lifecycle_mode not in {
+            "CPPI_TO_CM",
+            "GLIDEPATH_TO_GLIDEPATH",
+            "AGEINBONDS_TO_AGEINBONDS",
+        }:
             raise ValueError(
-                "lifecycle_mode must be 'CPPI_TO_CM' or 'GLIDEPATH_TO_GLIDEPATH'."
+                "lifecycle_mode must be 'CPPI_TO_CM', 'GLIDEPATH_TO_GLIDEPATH', "
+                "or 'AGEINBONDS_TO_AGEINBONDS'."
             )
 
     def run(
@@ -105,12 +116,19 @@ class LifecycleSimulator:
         # --- Step 1: Run accumulation ---------------------------------------------
         if self._lifecycle_mode == "CPPI_TO_CM":
             acc_result = AccCPPIEngine(self._acc_params).run(acc_returns, riskless_acc)
-        else:
+        elif self._lifecycle_mode == "GLIDEPATH_TO_GLIDEPATH":
             acc_result = AccGlidepathEngine(
                 self._acc_params,
                 initial_equity=self._acc_glidepath_initial,
                 final_equity=self._acc_glidepath_final,
                 shape=self._acc_glidepath_shape,
+            ).run(acc_returns, riskless_acc)
+        else:
+            acc_result = AccAgeInBondsEngine(
+                self._acc_params,
+                starting_age=self._acc_start_age,
+                min_bond_weight=0.18,
+                max_bond_weight=1.0,
             ).run(acc_returns, riskless_acc)
 
         if acc_result.portfolio_values_nominal.shape[1] != n_sims:
@@ -142,12 +160,24 @@ class LifecycleSimulator:
                 initial_wealths=retirement_wealths_nominal,
                 initial_risky_allocation=retirement_risky_allocation,
             )
-        else:
+        elif self._lifecycle_mode == "GLIDEPATH_TO_GLIDEPATH":
             dec_result = DecGlidepathEngine(
                 self._dec_params,
                 initial_equity=self._dec_glidepath_initial,
                 final_equity=self._dec_glidepath_final,
                 shape=self._dec_glidepath_shape,
+            ).run(
+                dec_returns,
+                riskless_dec,
+                initial_wealths=retirement_wealths_nominal,
+                initial_risky_allocation=retirement_risky_allocation,
+            )
+        else:
+            dec_result = DecAgeInBondsEngine(
+                self._dec_params,
+                starting_age=self._dec_start_age,
+                min_bond_weight=0.18,
+                max_bond_weight=1.0,
             ).run(
                 dec_returns,
                 riskless_dec,

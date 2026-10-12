@@ -19,36 +19,50 @@ from ui.charts import (
     build_glidepath_schedule_chart,
     build_stacked_allocation_chart,
 )
-from ui.components import build_model_caveats_panel, shared_market_sidebar
+from ui.components import build_model_caveats_panel, build_top_controls_header, shared_market_sidebar
 
-st.sidebar.title("Accumulation Setup")
-
-show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
-
-st.sidebar.header("Portfolio & Horizon")
-start_age = st.sidebar.number_input("Current Age", min_value=20, max_value=60, value=25, step=1)
-initial_wealth = st.sidebar.number_input(
-    "Starting Pot (€)", min_value=0, max_value=10_000_000,
-    value=1_000_000, step=50_000, format="%d",
+st.title("Accumulation & De-Risking Mechanics")
+st.caption(
+    "How different strategies manage the transition from risky to safe assets "
+    "over the accumulation horizon."
 )
-annual_contribution = st.sidebar.number_input(
-    "Annual Contribution (€)", min_value=0, max_value=10_000_000,
-    value=50_000, step=5_000, format="%d",
+
+st.sidebar.title("Global Market & Simulation")
+
+build_top_controls_header(
+    "Scenario Inputs",
+    "Shared market and simulation assumptions are in the sidebar.",
 )
-time_horizon = st.sidebar.slider("Savings Horizon (Years)", min_value=1, max_value=40, value=40)
+# show_cppi = st.checkbox("Show CPPI controls", value=False)
+show_cppi = False
 
-mkt = shared_market_sidebar(context="accumulation", include_cppi=show_cppi)
-
-st.sidebar.header("Constant Mix Parameters")
-cm_lambda = st.sidebar.slider(
+c1, c2, c3 = st.columns(3)
+with c1:
+    start_age = st.number_input("Starting Age", min_value=18, max_value=60, value=25, step=1)
+    retirement_age_default = 63
+    retirement_age_min = max(19, int(start_age) + 1)
+    retirement_age = st.number_input(
+        "Retirement Age",
+        min_value=retirement_age_min,
+        max_value=95,
+        value=min(max(retirement_age_default, retirement_age_min), 95),
+        step=1,
+    )
+with c2:
+    initial_wealth = st.number_input(
+        "Starting Pot (€)", min_value=0, max_value=10_000_000,
+        value=1_000_000, step=50_000, format="%d",
+    )
+    annual_contribution = st.number_input(
+        "Annual Contribution (€)", min_value=0, max_value=10_000_000,
+        value=50_000, step=5_000, format="%d",
+    )
+with c3:
+    cm_lambda = st.slider(
     "Risky Allocation (%)", min_value=10, max_value=100, value=60, step=5,
     help="Constant Mix: fixed percentage of portfolio held in risky assets at all times.",
-)
-
-st.sidebar.header("Glidepath Parameters")
-gp_initial = st.sidebar.slider("Initial Equity (%)", min_value=40, max_value=100, value=80, step=5) / 100.0
-gp_final = st.sidebar.slider("Final Equity (%)", min_value=0, max_value=60, value=20, step=5) / 100.0
-gp_shape = st.sidebar.radio(
+    )
+    gp_shape = st.radio(
     "Glidepath Shape",
     options=["linear", "convex", "concave"],
     index=0,
@@ -56,9 +70,19 @@ gp_shape = st.sidebar.radio(
         "Linear: constant-rate transition. "
         "Convex: slow de-risking early, sharp near retirement. "
         "Concave: aggressive de-risking early, flattens later."
-    ),
-)
-run_sims = st.sidebar.button("Run Simulation", type="primary", use_container_width=True, key="dr_run")
+    ),)
+g1, g2, g3 = st.columns(3)
+with g1:
+    gp_initial = st.slider("Initial Equity (%)", min_value=40, max_value=100, value=80, step=5) / 100.0
+with g2:
+    gp_final = st.slider("Final Equity (%)", min_value=0, max_value=60, value=20, step=5) / 100.0
+with g3:
+    pass
+
+time_horizon = int(retirement_age - start_age)
+
+mkt = shared_market_sidebar(context="accumulation", include_cppi=show_cppi)
+run_sims = st.button("Run Simulation", type="primary", use_container_width=True, key="dr_run")
 
 _sim_kw = dict(
     initial_wealth=float(initial_wealth),
@@ -90,33 +114,29 @@ if ("derisking_sims" not in st.session_state) or run_sims:
     )
 
 if "derisking_sims" not in st.session_state:
-    st.title("Accumulation & De-Risking Mechanics")
-    st.info("Configure parameters in the sidebar, then click **Run Simulation** to begin.")
+    st.info("Configure parameters and click **Run Simulation** to begin.")
     st.stop()
 
 sim_cm, sim_gp = st.session_state["derisking_sims"]
 
 n_steps = len(sim_cm["dates"])
-retirement_age = start_age + time_horizon
 age_axis = np.linspace(start_age, retirement_age, n_steps)
 
-st.title("Accumulation & De-Risking Mechanics")
-st.caption(
-    "How different strategies manage the transition from risky to safe assets "
-    f"over the accumulation horizon. Investor age {start_age} → {retirement_age}."
-)
+st.caption(f"Investor age {start_age} → {retirement_age}.")
 
 st.subheader("De-Risking Visual Comparison")
 left_col, right_col = st.columns(2)
 
 with left_col:
+    cm_alloc_fig = build_stacked_allocation_chart(
+        sim_cm,
+        age_axis,
+        title=f"Constant Mix; Risky vs Safe ({cm_lambda:.0f}% Risky)",
+        height=350,
+    )
+    cm_alloc_fig.update_xaxes(range=[18, int(retirement_age)])
     st.plotly_chart(
-        build_stacked_allocation_chart(
-            sim_cm,
-            age_axis,
-            title=f"Constant Mix; Risky vs Safe ({cm_lambda:.0f}% Risky)",
-            height=350,
-        ),
+        cm_alloc_fig,
         width='stretch',
     )
     st.caption(
@@ -125,20 +145,16 @@ with left_col:
     )
 
 with right_col:
-    st.plotly_chart(
-        build_glidepath_schedule_chart(
-            initial_equity=gp_initial,
-            final_equity=gp_final,
-            time_horizon=time_horizon,
-            shape=gp_shape,
-            height=350,
-        ),
-        width='stretch',
+    gp_alloc_fig = build_glidepath_schedule_chart(
+        initial_equity=gp_initial,
+        final_equity=gp_final,
+        time_horizon=time_horizon,
+        shape=gp_shape,
+        height=350,
+        start_age=int(start_age),
     )
-    st.caption(
-        "The glidepath schedule is fixed at construction time. It provides a transparent de-risking rule, "
-        "but does not react to realized market stress or improvements in funding status."
-    )
+    gp_alloc_fig.update_xaxes(range=[18, int(retirement_age)])
+    st.plotly_chart(gp_alloc_fig, width='stretch')
 
 # Replace low-value cumulative-contribution chart with a summary table
 st.divider()
@@ -172,9 +188,4 @@ st.dataframe(
     width='stretch',
 )
 
-st.caption(
-    "This replaces the cumulative-contributions chart because contributions are deterministic and identical across strategies. "
-    "The decision-relevant differences are exposure path and downside distribution."
-)
-
-build_model_caveats_panel()
+# build_model_caveats_panel()

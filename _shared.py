@@ -5,9 +5,11 @@ import pandas as pd
 import streamlit as st
 
 from simulator import (
+    AccAgeInBondsEngine,
     AccCPPIEngine,
     AccConstantMixEngine,
     AccGlidepathEngine,
+    DecAgeInBondsEngine,
     DecConstantMixEngine,
     DecGlidepathEngine,
     HistoricalBootstrapSimulator,
@@ -54,6 +56,8 @@ def run_simulation(
     glidepath_initial: float = 0.80,
     glidepath_final: float = 0.20,
     glidepath_shape: str = "linear",
+    accumulation_start_age: int = 25,
+    decumulation_start_age: int = 64,
 ) -> dict:
     """Execute the full MC pipeline and return serialisable results."""
     params = StrategyParameters(
@@ -93,7 +97,7 @@ def run_simulation(
         if strategy_type == "CPPI":
             raise ValueError(
                 "Decumulation CPPI is deprecated and unsupported in the app. "
-                "Use 'CM' or 'Glidepath' for retirement comparisons."
+                "Use 'CM', 'Glidepath', or 'AgeInBonds' for retirement comparisons."
             )
         if strategy_type in {"Glidepath", "GP"}:
             engine = DecGlidepathEngine(
@@ -101,6 +105,13 @@ def run_simulation(
                 initial_equity=glidepath_initial,
                 final_equity=glidepath_final,
                 shape=glidepath_shape,
+            )
+        elif strategy_type in {"AgeInBonds", "Age-in-Bonds", "AIB"}:
+            engine = DecAgeInBondsEngine(
+                params,
+                starting_age=decumulation_start_age,
+                min_bond_weight=0.18,
+                max_bond_weight=1.0,
             )
         else:
             engine = DecConstantMixEngine(params)
@@ -113,6 +124,13 @@ def run_simulation(
                 initial_equity=glidepath_initial,
                 final_equity=glidepath_final,
                 shape=glidepath_shape,
+            )
+        elif strategy_type in {"AgeInBonds", "Age-in-Bonds", "AIB"}:
+            engine = AccAgeInBondsEngine(
+                params,
+                starting_age=accumulation_start_age,
+                min_bond_weight=0.18,
+                max_bond_weight=1.0,
             )
         else:
             engine = AccConstantMixEngine(params)
@@ -137,7 +155,6 @@ def run_simulation(
         "prob_success_terminal": analyzer.terminal_floor_probability_of_success(),
         "prob_success_income": analyzer.income_probability_of_success(),
         "expected_shortfall": analyzer.expected_shortfall(),
-        "tail_es_terminal": analyzer.terminal_tail_expected_shortfall(),
         "median_ending": analyzer.median_ending_wealth(),
         "median_mdd": analyzer.median_max_drawdown(),
         "percentiles": analyzer.percentile_paths(),
@@ -172,6 +189,8 @@ def run_lifecycle_simulation(
     risk_free_rate: float = 2.0,
     n_simulations: int = 1000,
     rebalance_freq: str = "monthly",
+    acc_rebalance_freq: str | None = None,
+    dec_rebalance_freq: str | None = None,
     simulation_method: str = "GBM (Parametric)",
     block_size: int = 1,
     annual_inflation_rate: float = 0.0,
@@ -183,8 +202,13 @@ def run_lifecycle_simulation(
     dec_glidepath_initial: float = 0.60,
     dec_glidepath_final: float = 0.30,
     dec_glidepath_shape: str = "linear",
+    current_age: int = 25,
+    retirement_age: int | None = None,
 ) -> tuple[dict, dict, float]:
     """Run a full lifecycle simulation with pathwise retirement handoff."""
+    acc_freq = acc_rebalance_freq or rebalance_freq
+    dec_freq = dec_rebalance_freq or rebalance_freq
+
     acc_params = StrategyParameters(
         initial_wealth=acc_initial_wealth,
         time_horizon=acc_time_horizon,
@@ -194,7 +218,7 @@ def run_lifecycle_simulation(
         market_volatility=market_volatility,
         risk_free_rate=risk_free_rate,
         n_simulations=n_simulations,
-        rebalance_freq=rebalance_freq,
+        rebalance_freq=acc_freq,
         annual_contribution=acc_contribution,
         annual_inflation_rate=annual_inflation_rate,
     )
@@ -207,30 +231,40 @@ def run_lifecycle_simulation(
         market_volatility=market_volatility,
         risk_free_rate=risk_free_rate,
         n_simulations=n_simulations,
-        rebalance_freq=rebalance_freq,
+        rebalance_freq=dec_freq,
         annual_withdrawal=dec_withdrawal,
         annual_inflation_rate=annual_inflation_rate,
         Lambda=Lambda,
     )
 
     if simulation_method == "Historical Bootstrap":
-        bootstrap_params = LifecycleParameters(
+        acc_bootstrap_params = LifecycleParameters(
             n_simulations=n_simulations,
-            time_horizon=max(acc_time_horizon, dec_time_horizon),
-            rebalance_freq=rebalance_freq,
+            time_horizon=acc_time_horizon,
+            rebalance_freq=acc_freq,
             cppi_multiplier=acc_cppi_multiplier,
             floor_pct=acc_floor_pct,
             risk_free_rate=risk_free_rate,
             annual_withdrawal=dec_withdrawal,
         )
-        bootstrap = HistoricalBootstrapSimulator(bootstrap_params)
-        acc_returns = bootstrap.generate_returns(
+        dec_bootstrap_params = LifecycleParameters(
+            n_simulations=n_simulations,
+            time_horizon=dec_time_horizon,
+            rebalance_freq=dec_freq,
+            cppi_multiplier=acc_cppi_multiplier,
+            floor_pct=dec_floor_pct,
+            risk_free_rate=risk_free_rate,
+            annual_withdrawal=dec_withdrawal,
+        )
+        acc_bootstrap = HistoricalBootstrapSimulator(acc_bootstrap_params)
+        dec_bootstrap = HistoricalBootstrapSimulator(dec_bootstrap_params)
+        acc_returns = acc_bootstrap.generate_returns(
             n_steps=acc_params.n_steps,
             n_simulations=n_simulations,
             seed=42,
             block_size=block_size,
         )["equity"]
-        dec_returns = bootstrap.generate_returns(
+        dec_returns = dec_bootstrap.generate_returns(
             n_steps=dec_params.n_steps,
             n_simulations=n_simulations,
             seed=123,
@@ -239,6 +273,12 @@ def run_lifecycle_simulation(
     else:
         acc_returns = MarketSimulator(acc_params).generate_returns(seed=42)
         dec_returns = MarketSimulator(dec_params).generate_returns(seed=123)
+
+    resolved_retirement_age = (
+        int(retirement_age)
+        if retirement_age is not None
+        else int(current_age) + int(acc_time_horizon)
+    )
 
     lc: LifecycleResult = LifecycleSimulator(
         acc_params,
@@ -250,6 +290,8 @@ def run_lifecycle_simulation(
         dec_glidepath_initial=dec_glidepath_initial,
         dec_glidepath_final=dec_glidepath_final,
         dec_glidepath_shape=dec_glidepath_shape,
+        acc_start_age=int(current_age),
+        dec_start_age=resolved_retirement_age,
     ).run(acc_returns, dec_returns)
 
     retirement_pot_nominal = float(np.median(lc.retirement_wealths_nominal))
@@ -283,7 +325,6 @@ def run_lifecycle_simulation(
         "prob_success_terminal": acc_analyzer.terminal_floor_probability_of_success(),
         "prob_success_income": acc_analyzer.income_probability_of_success(),
         "expected_shortfall": acc_analyzer.expected_shortfall(),
-        "tail_es_terminal": acc_analyzer.terminal_tail_expected_shortfall(),
         "median_ending": acc_analyzer.median_ending_wealth(),
         "median_mdd": acc_analyzer.median_max_drawdown(),
         "percentiles": acc_analyzer.percentile_paths(),
@@ -310,7 +351,6 @@ def run_lifecycle_simulation(
         "prob_success_terminal": dec_analyzer.terminal_floor_probability_of_success(),
         "prob_success_income": dec_analyzer.income_probability_of_success(),
         "expected_shortfall": dec_analyzer.expected_shortfall(),
-        "tail_es_terminal": dec_analyzer.terminal_tail_expected_shortfall(),
         "median_ending": dec_analyzer.median_ending_wealth(),
         "median_mdd": dec_analyzer.median_max_drawdown(),
         "percentiles": dec_analyzer.percentile_paths(),
@@ -346,10 +386,11 @@ def run_sensitivity_sweep(
     rebalance_freq: str,
     simulation_method: str = "GBM (Parametric)",
     block_size: int = 1,
-    strategy_type: str = "Glidepath",
+    strategy_type: str = "AgeInBonds",
     glidepath_initial: float = 0.60,
     glidepath_final: float = 0.30,
     glidepath_shape: str = "linear",
+    decumulation_start_age: int = 64,
     n_sims_sweep: int = 300,
 ) -> pd.DataFrame:
     """Compute a PoS matrix over withdrawal rates × retirement horizons."""
@@ -377,8 +418,9 @@ def run_sensitivity_sweep(
                 glidepath_initial=glidepath_initial,
                 glidepath_final=glidepath_final,
                 glidepath_shape=glidepath_shape,
+                decumulation_start_age=decumulation_start_age,
             )
-            row[f"{rate:.0f} %"] = round(sim["prob_success"], 1)
+            row[f"{rate:.0f} %"] = round(sim["prob_success_income"], 1)
         rows[horizon] = row
 
     df = pd.DataFrame(rows).T

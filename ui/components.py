@@ -40,30 +40,6 @@ def shared_market_sidebar(
                 help="Multiplier m used by CPPI: risky allocation = m × cushion.",
             )
 
-    st.sidebar.header("Market Assumptions")
-
-    expected_return = st.sidebar.slider(
-        "Expected Market Return (%)",
-        min_value=0.0,
-        max_value=20.0,
-        value=float(defaults["expected_return"]),
-        step=0.5,
-    )
-    market_volatility = st.sidebar.slider(
-        "Market Volatility (%)",
-        min_value=1.0,
-        max_value=50.0,
-        value=float(defaults["market_volatility"]),
-        step=0.5,
-    )
-    risk_free_rate = st.sidebar.slider(
-        "Risk-Free Rate (%)",
-        min_value=0.0,
-        max_value=10.0,
-        value=float(defaults["risk_free_rate"]),
-        step=0.25,
-    )
-
     st.sidebar.header("Simulation")
 
     simulation_method = st.sidebar.radio(
@@ -80,13 +56,36 @@ def shared_market_sidebar(
             icon=None,
         )
 
+    with st.sidebar.expander("Market Assumptions (Advanced)", expanded=False):
+        expected_return = st.slider(
+            "Expected Market Return (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(defaults["expected_return"]),
+            step=0.5,
+        )
+        market_volatility = st.slider(
+            "Market Volatility (%)",
+            min_value=1.0,
+            max_value=50.0,
+            value=float(defaults["market_volatility"]),
+            step=0.5,
+        )
+        risk_free_rate = st.slider(
+            "Risk-Free Rate (%)",
+            min_value=0.0,
+            max_value=10.0,
+            value=float(defaults["risk_free_rate"]),
+            step=0.25,
+        )
+
     block_size = 1
     if simulation_method == "Historical Bootstrap":
         block_size = st.sidebar.slider(
             "Block Size (Bootstrap)",
-            min_value=1,
+            min_value=5,
             max_value=24,
-            value=1,
+            value=6,
             step=1,
             help="Number of consecutive periods per bootstrap block. 1 = i.i.d. resample; larger values preserve short-term autocorrelation.",
         )
@@ -117,6 +116,12 @@ def shared_market_sidebar(
         simulation_method=simulation_method,
         block_size=block_size,
     )
+
+
+def build_top_controls_header(title: str, caption: str) -> None:
+    """Render a consistent top-of-page controls header block."""
+    st.subheader(title)
+    st.caption(caption)
 
 
 # ---------------------------------------------------------------------------
@@ -190,15 +195,35 @@ def format_delta_metric(
     baseline: float,
     currency: bool = True,
     inverse: bool = False,
-) -> tuple[str, str]:
-    """Return (formatted_value, delta_str) for use with st.metric(..., delta=...)."""
+) -> tuple[str, str, str]:
+    """Return (formatted_value, delta_str, delta_color) for st.metric.
+
+    Streamlit infers red/green from delta sign, so delta strings must begin with
+    '+' or '-' when non-zero. Zero is returned with ``delta_color='off'`` to keep
+    a neutral appearance.
+    """
     delta_abs = value - baseline
     delta_pct = (delta_abs / baseline * 100.0) if baseline != 0 else 0.0
-    sign = "+" if delta_abs >= 0 else ""
+
+    if delta_abs > 0:
+        sign = "+"
+    elif delta_abs < 0:
+        sign = "-"
+    else:
+        sign = ""
+
+    magnitude_abs = abs(delta_abs)
+    magnitude_pct = abs(delta_pct)
+
+    if delta_abs == 0:
+        delta_color = "off"
+    else:
+        delta_color = "inverse" if inverse else "normal"
+
     if currency:
         value_str = f"€ {value:,.0f}"
-        delta_str = f"{sign}€ {delta_abs:,.0f} ({delta_pct:+.1f}% vs baseline)"
+        delta_str = f"{sign}€ {magnitude_abs:,.0f} ({sign}{magnitude_pct:.1f}% vs baseline)"
     else:
         value_str = f"{value:.1f}%"
-        delta_str = f"{delta_pct:+.1f}% vs baseline"
-    return value_str, delta_str
+        delta_str = f"{sign}{magnitude_pct:.1f}% vs baseline"
+    return value_str, delta_str, delta_color

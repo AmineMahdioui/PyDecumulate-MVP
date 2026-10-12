@@ -26,10 +26,12 @@ def build_fan_chart(
     median_color: str = AMUNDI_CYAN,
     median_label: str = "Median Portfolio",
     show_risky_mean: bool = True,
+    x_values: np.ndarray | None = None,
+    xaxis_title: str = "Date",
 ) -> go.Figure:
     """Return a Plotly fan chart for a single simulation result."""
     pcts = sim_data["percentiles"]
-    dates = sim_data["dates"]
+    dates = x_values if x_values is not None else sim_data["dates"]
     fig = go.Figure()
 
     # P5-P95
@@ -70,7 +72,7 @@ def build_fan_chart(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Date",
+        xaxis_title=xaxis_title,
         yaxis_title="Value (€)",
         template="plotly_white",
         height=520,
@@ -468,7 +470,7 @@ def build_glide_path_comparison(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Date",
+        xaxis_title="Investor Age",
         yaxis_title="Risky Asset Allocation (%)",
         yaxis=dict(range=[0, 105], ticksuffix="%"),
         template="plotly_white",
@@ -514,7 +516,7 @@ def build_stacked_allocation_chart(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Date",
+        xaxis_title="Investor Age",
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 100], ticksuffix="%"),
         template="plotly_white",
@@ -704,19 +706,21 @@ def build_survival_curve(
     title: str = "Probability the Portfolio Is Still Alive",
     primary_label: str = "Primary Strategy",
     secondary_label: str = "Secondary Strategy",
+    x_start_age: int | None = None,
 ) -> go.Figure:
     """Survival curve built from per-path survival times, not ECDF."""
     primary_times = np.asarray(sim_primary["survival_times"], dtype=float)
     if time_horizon is None:
         time_horizon = int(np.ceil(primary_times.max()))
     grid = np.arange(0, time_horizon + 1)
+    x_axis = grid if x_start_age is None else grid + int(x_start_age)
 
     def _survivor(times: np.ndarray) -> np.ndarray:
         return np.array([100.0 * np.mean(times > g) for g in grid])
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=grid,
+        x=x_axis,
         y=_survivor(primary_times),
         mode="lines",
         name=primary_label,
@@ -725,7 +729,7 @@ def build_survival_curve(
     if sim_secondary is not None:
         secondary_times = np.asarray(sim_secondary["survival_times"], dtype=float)
         fig.add_trace(go.Scatter(
-            x=grid,
+            x=x_axis,
             y=_survivor(secondary_times),
             mode="lines",
             name=secondary_label,
@@ -734,7 +738,7 @@ def build_survival_curve(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Years in Retirement",
+        xaxis_title="Investor Age (Retirement Onward)" if x_start_age is not None else "Years in Retirement",
         yaxis_title="Survival Probability (%)",
         yaxis=dict(range=[0, 105], ticksuffix="%"),
         template="plotly_white",
@@ -752,6 +756,7 @@ def build_glidepath_schedule_chart(
     time_horizon: int,
     shape: str = "linear",
     height: int = 400,
+    start_age: int | None = None,
 ) -> go.Figure:
     """Deterministic allocation schedule for a glidepath (no simulation needed).
 
@@ -765,13 +770,14 @@ def build_glidepath_schedule_chart(
     )
 
     years = np.arange(0, time_horizon + 1, dtype=float)
+    x_axis = years if start_age is None else years + float(start_age)
     equity = np.array([glidepath.get_equity_allocation(int(y)) for y in years])
     hundred = np.full_like(equity, 100.0)
 
     fig = go.Figure()
     # Bottom area: equity (fills from 0 up to the equity line)
     fig.add_trace(go.Scatter(
-        x=years, y=equity * 100, mode="lines+markers",
+        x=x_axis, y=equity * 100, mode="lines+markers",
         name="Equity Allocation",
         fill="tozeroy", fillcolor="rgba(0,159,227,0.35)",
         line=dict(color=AMUNDI_CYAN, width=3),
@@ -779,7 +785,7 @@ def build_glidepath_schedule_chart(
     ))
     # Top area: bonds fill from the equity boundary up to 100%
     fig.add_trace(go.Scatter(
-        x=years, y=hundred, mode="none",
+        x=x_axis, y=hundred, mode="none",
         name="Bond / Safe Allocation",
         fill="tonexty", fillcolor="rgba(88,89,91,0.20)",
         showlegend=True,
@@ -787,7 +793,59 @@ def build_glidepath_schedule_chart(
     ))
     fig.update_layout(
         title=f"Glidepath Schedule ({shape.title()}) — Deterministic Allocation",
-        xaxis_title="Year",
+        xaxis_title="Investor Age" if start_age is not None else "Year",
+        yaxis_title="Allocation (%)",
+        yaxis=dict(range=[0, 105], ticksuffix="%"),
+        template="plotly_white",
+        height=height,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=30, t=60, b=40),
+        font=dict(family="Arial, sans-serif", size=13, color=AMUNDI_NAVY),
+    )
+    return fig
+
+
+def build_age_in_bonds_schedule_chart(
+    starting_age: int,
+    time_horizon: int,
+    rebalance_freq: str = "monthly",
+    min_bond_weight: float = 0.18,
+    max_bond_weight: float = 1.0,
+    height: int = 400,
+) -> go.Figure:
+    """Deterministic allocation schedule for Age-in-Bonds (no simulation needed)."""
+    steps_per_year = {
+        "daily": 252,
+        "weekly": 52,
+        "monthly": 12,
+        "quarterly": 4,
+        "yearly": 1,
+    }[rebalance_freq]
+    total_steps = int(time_horizon * steps_per_year)
+    years = np.arange(0, total_steps + 1, dtype=float) / steps_per_year
+    ages = starting_age + years
+
+    bond = np.clip(ages / 100.0, min_bond_weight, max_bond_weight)
+    equity = 1.0 - bond
+    hundred = np.full_like(equity, 100.0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ages, y=equity * 100, mode="lines",
+        name="Equity Allocation",
+        fill="tozeroy", fillcolor="rgba(0,159,227,0.35)",
+        line=dict(color=AMUNDI_CYAN, width=3),
+    ))
+    fig.add_trace(go.Scatter(
+        x=ages, y=hundred, mode="none",
+        name="Bond / Safe Allocation",
+        fill="tonexty", fillcolor="rgba(88,89,91,0.20)",
+        showlegend=True,
+        line=dict(color="rgba(0,0,0,0)"),
+    ))
+    fig.update_layout(
+        title="Age-in-Bonds Schedule — Deterministic Allocation",
+        xaxis_title="Investor Age",
         yaxis_title="Allocation (%)",
         yaxis=dict(range=[0, 105], ticksuffix="%"),
         template="plotly_white",

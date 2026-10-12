@@ -11,24 +11,30 @@ st.set_page_config(layout="wide")
 
 from _shared import run_sensitivity_sweep
 from ui.charts import build_sensitivity_heatmap
-from ui.components import build_model_caveats_panel, shared_market_sidebar
+from ui.components import build_model_caveats_panel, build_top_controls_header, shared_market_sidebar
 
-st.sidebar.title("Sensitivity Setup")
-mkt_show_cppi = st.sidebar.checkbox("Show CPPI controls", value=False)
-mkt = shared_market_sidebar(include_cppi=mkt_show_cppi)
+st.sidebar.title("Global Market & Simulation")
 
 st.title("Sensitivity & Model Risk")
 st.caption(
-    "Explore how Probability of Success changes across withdrawal rates and retirement horizons "
-    "under the current market assumptions."
+    "Explore how Income Probability of Success changes across withdrawal rates and retirement horizons "
+    "under the current market assumptions. Income PoS = probability that annual withdrawals are never missed."
 )
+
+build_top_controls_header(
+    "Scenario Inputs",
+    "",
+)
+
+mkt_show_cppi = False
+mkt = shared_market_sidebar(include_cppi=mkt_show_cppi)
 
 c1, c2, c3 = st.columns(3)
 with c1:
     strategy_type = st.radio(
         "Strategy",
-        options=["Constant Mix", "Glidepath"],
-        index=0,
+        options=["Constant Mix", "Glidepath", "Age-in-Bonds"],
+        index=2,
         horizontal=True,
     )
 with c2:
@@ -47,8 +53,20 @@ with c3:
             step=5,
             help="Used when Constant Mix is selected.",
         )
+        retirement_start_age = 64
+    elif strategy_type == "Age-in-Bonds":
+        retirement_start_age = st.number_input(
+            "Retirement Start Age",
+            min_value=40,
+            max_value=90,
+            value=64,
+            step=1,
+            help="Used when Age-in-Bonds is selected.",
+        )
+        lambda_pct = 60
     else:
         # Default value when not using Constant Mix
+        retirement_start_age = 64
         lambda_pct = 60
 
 c4, c5 = st.columns(2)
@@ -65,14 +83,17 @@ with c5:
         default=[15, 20, 25, 30],
     )
 
-_strategy_map = {"Constant Mix": "CM", "Glidepath": "Glidepath"}
+_strategy_map = {
+    "Constant Mix": "CM",
+    "Glidepath": "Glidepath",
+    "Age-in-Bonds": "AgeInBonds",
+}
 _strat = _strategy_map[strategy_type]
 
 st.caption(
     "Withdrawal rate = annual withdrawal ÷ initial retirement wealth. "
-    f"Each cell shows Probability of Success (%) using **{mkt['n_simulations']:,} simulations**. "
-    "Displayed values are nominal. Decumulation floor is not an active control here because retirement mode uses "
-    "Constant Mix or Glidepath (no DecCPPI mode)."
+    f"Each cell shows Income Probability of Success (%) using **{mkt['n_simulations']:,} simulations**. "
+    "Income PoS reflects the probability that the portfolio sustains the withdrawal without shortfalls across all paths."
 )
 
 if not withdrawal_rates or not horizons:
@@ -94,6 +115,7 @@ else:
                 simulation_method=mkt["simulation_method"],
                 block_size=mkt["block_size"],
                 strategy_type=_strat,
+                decumulation_start_age=int(retirement_start_age),
                 n_sims_sweep=mkt["n_simulations"],
             )
             st.session_state["sensitivity_df"] = df
@@ -101,4 +123,4 @@ else:
     if "sensitivity_df" in st.session_state:
         st.plotly_chart(build_sensitivity_heatmap(st.session_state["sensitivity_df"]), width='stretch')
 
-build_model_caveats_panel()
+# build_model_caveats_panel()
